@@ -446,6 +446,8 @@ async def _file_analyze_user(message: Message):
     if await is_previous_message_not_answered_yet(message, user_tasks):
         return
 
+    user_semaphores[user_id] = asyncio.Semaphore()
+
     try:
         async with user_semaphores[user_id]:
             document = message.document
@@ -473,8 +475,8 @@ async def _file_analyze_user(message: Message):
             elif file_extension == '.pdf':
                 content = await asyncio.get_running_loop().run_in_executor(executor, extract_pdf_text, file_bytes)
             else:
-                await message.answer("❌  Упс! Не поддерживаемый формат файла.\
-                                     (Поддерживаются только '.docx', '.xlsx', '.pptx', '.pdf', '.csv', '.txt')")
+                await message.answer("❌  Упс! Не поддерживаемый формат файла."
+                                     "(Поддерживаются только '.docx', '.xlsx', '.pptx', '.pdf', '.csv', '.txt')")
                 return
 
     except asyncio.CancelledError:
@@ -482,15 +484,16 @@ async def _file_analyze_user(message: Message):
                              parse_mode="HTML")
 
     except Exception as e:
-        await message.answer("❌  Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
-                                            обработке файла!\nПопробуйте снова или обратитесь в тех. поддержку:",
+        await message.answer("❌  Хьюстон, у нас проблемы!\nЧто-то пошло не так при "
+                             "обработке файла!\nПопробуйте снова или обратитесь в тех. поддержку:",
                              reply_markup=get_help_keyboard(),
                              parse_mode="HTML")
     else:
 
-        content = f"Данные из файла:\n{content[:4096]}"
+        content = f"Данные из файла:\n{content}"[:4096]
 
         # message handle
+
         await _message_handle_user(message=message,
                                    context=content)
 

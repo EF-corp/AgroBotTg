@@ -14,15 +14,17 @@ from typing import List
 import json
 import os
 from pytube import YouTube, Playlist
+import ffmpeg
 import uuid
 
 
 class KnowledgeLoader:
 
     def __init__(self):
-        self.http_client = httpx.AsyncClient(proxies=Config.proxies)
-        self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key, http_client=self.http_client)
+        self.http_client_ = httpx.AsyncClient(proxies=Config.proxies)
+        self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key, http_client=self.http_client_)
         self.executor_pool = ThreadPoolExecutor()
+        self.http_client = httpx.AsyncClient()
 
     async def transcribe(self, file: io.BytesIO):
 
@@ -39,16 +41,32 @@ class KnowledgeLoader:
             raise Exception(f"⚠️ _'error'._ ⚠️\n{str(e)}") from e
 
     @staticmethod
-    async def _get_audio_from_video(video_data: io.BytesIO):
-
+    async def _get_audio_from_video(video_data: str) -> io.BytesIO:
         try:
-
+            # Create a BytesIO object to hold the audio data
             audio_data = io.BytesIO()
-            clip = VideoFileClip(video_data)
-            clip.audio.write_audiofile(audio_data, codec="mp3", bitrate="32k")
-            clip.audio.close()
-            clip.close()
+
+            # Load the video clip
+            # clip = VideoFileClip(video_data)
+            # video_temp_path = "temp_video.mp4"
+            # clip.write_videofile(video_temp_path, codec="libx264")
+
+            # Use ffmpeg to extract audio and write to BytesIO object
+            process = (
+                ffmpeg
+                .input(video_data)
+                .output('pipe:', format='mp3', acodec='libmp3lame', audio_bitrate='32k')
+                .run_async(pipe_stdout=True, pipe_stderr=True)
+            )
+
+            # Read the output from the process and write it to the BytesIO object
+            audio_data.write(process.stdout.read())
             audio_data.seek(0)
+
+            # Clean up
+            process.stdout.close()
+            process.wait()
+            clip.close()
 
         except Exception as e:
             logging.exception(e)
@@ -79,12 +97,12 @@ class KnowledgeLoader:
 
         file_path = await self.download_video(url, output_path)
 
-        async with aiofiles.open(file_path, "rb") as f:
-            video = io.BytesIO(await f.read())
-            video.name = "youtube.mp4"
-            video.seek(0)
+        # async with aiofiles.open(file_path, "rb") as f:
+        #     video = io.BytesIO(await f.read())
+        #     video.name = "youtube.mp4"
+        #     video.seek(0)
 
-        audio = await self._get_audio_from_video(video)
+        audio = await self._get_audio_from_video(file_path)
         transcription = await self.transcribe(audio)
         transcription = io.BytesIO(transcription.encode("utf-8")).read()
 
@@ -148,6 +166,7 @@ class KnowledgeLoader:
         async with self.http_client as client:
             response = await client.get(url)
             response.raise_for_status()
+            # await client.aclose()
             return io.BytesIO(response.content)
 
     async def gather_files_from_gfolder(self, folder_url):
@@ -155,6 +174,7 @@ class KnowledgeLoader:
             response = await client.get(folder_url)
             response.raise_for_status()
             urls = response.json().get("file_urls", [])
+            # await client.aclose()
             return urls
 
     async def load_knowledge_gdrive(self, gdrive_url: str,
@@ -169,14 +189,24 @@ class KnowledgeLoader:
                     url = f"https://drive.google.com/uc?export=download&id={gdrive_url.split('/')[-2]}"
                     file_urls = [url]
 
+            elif "docs.google.com" in gdrive_url:
+                if "folder" in gdrive_url:
+                    file_urls = await self.gather_files_from_gfolder(gdrive_url)
+                else:
+                    url = f"https://drive.google.com/uc?export=download&id={gdrive_url.split('/')[-2]}"
+                    file_urls = [url]
+
             else:
                 raise ValueError("⚠️Need only google drive links!")
 
             contents: list = []
 
-            for url in file_urls:
-                content = await self.download_file_gdrive(url=url)
-                contents.append(content)
+            async with self.http_client as client:
+                for url in file_urls:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    content = io.BytesIO(response.content)
+                    contents.append(content)
 
             batch = await self.client.beta.vector_stores.file_batches.upload_and_poll(
                 vector_store_id=vector_store.id,

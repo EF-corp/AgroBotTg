@@ -19,7 +19,7 @@ async def register_user(message: Message | CallbackQuery, user_semaphores):
                               first_name=message.from_user.first_name,
                               last_name=message.from_user.last_name)
     if user_id not in user_semaphores:
-        user_semaphores[user_id] = asyncio.Semaphore(1)
+        user_semaphores[user_id] = asyncio.Semaphore()
 
 
 async def get_user_balance(user_id):

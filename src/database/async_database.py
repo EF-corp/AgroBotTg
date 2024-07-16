@@ -100,7 +100,7 @@ class Database:
                 return False
 
     async def check_if_payments_exists(self, reg_pay_id, raise_exception: bool = False):
-        count = await self.payments_collection.count_documents({"reg_pay_id": reg_pay_id})
+        count = await self.payments_collection.count_documents({"_id": reg_pay_id})
         if count > 0:
             return True
         else:
@@ -110,7 +110,7 @@ class Database:
                 return False
 
     async def check_if_payments_exists_user(self, user_id, raise_exception: bool = False):
-        count = await self.payments_collection.count_documents({"_id": user_id})
+        count = await self.payments_collection.count_documents({"user_id": user_id})
         if count > 0:
             return True
         else:
@@ -139,9 +139,8 @@ class Database:
         rate_dict = await self.rate_collection.find_one({"_id": rate})
         type_ = rate_dict["type"]
 
-        if (type_ == "monthly" and (datetime.now() - await self.get_user_attribute(user_id, "last_pay")).days <= 30) \
-                or (type_ == "yearly" and (
-                datetime.now() - await self.get_user_attribute(user_id, "last_pay")).days <= 365):
+        if (type_ == "месячный" and (datetime.now() - await self.get_user_attribute(user_id, "last_pay")).days <= 30) \
+                or (type_ == "годовой" and (datetime.now() - await self.get_user_attribute(user_id, "last_pay")).days <= 365):
             return True
         else:
             if raise_exception:
@@ -175,13 +174,13 @@ class Database:
                               rate_id: str):
 
         payment_dict = {
-            "_id": user_id,
-            "reg_pay_id": reg_pay_num,  # ?
+            "_id": reg_pay_num,
+            "user_id": user_id,  # ?
             "rate_id": rate_id,
             "amount": amount
         }
-
-        await self.payments_collection.insert_one(payment_dict)
+        if not await self.check_if_payments_exists(reg_pay_num):
+            await self.payments_collection.insert_one(payment_dict)
 
     async def add_new_user(
             self,
@@ -272,7 +271,7 @@ class Database:
         await self.set_user_attribute(user_id=user_id,
                                       key="n_generate_seconds",
                                       value=await self.get_user_attribute(user_id,
-                                                                          "n_generate_seconds") - n_used_tokens)
+                                                                          "n_generate_seconds") - n_generate_seconds)
 
         def reset_if_necessary(interval_name, interval_duration):
             if (now - current_spend[interval_name]["last_reset"]).days > interval_duration:
@@ -399,7 +398,7 @@ class Database:
 
     async def get_payment_data_user(self, user_id):
         await self.check_if_payments_exists_user(user_id, raise_exception=True)
-        payment_data = await self.payments_collection.find_one({"_id": user_id})
+        payment_data = await self.payments_collection.find_one({"user_id": user_id})
 
         return payment_data
 
@@ -416,13 +415,13 @@ class Database:
 
     async def get_all_vs(self):
         cursor = self.vs_collection.find({})
-        vs = await cursor.to_list(length=None)
-        return vs
+        vs = await cursor.distinct('_id')
+        return list(map(str, vs))
 
     async def get_all_partners(self):
         cursor = self.partner_collection.find({})
-        partners = await cursor.to_list(length=None)
-        return partners
+        partners = await cursor.distinct('_id')
+        return list(map(str, partners))
 
     async def get_all_users_data(self):
         cursor = self.user_collection.find({})
@@ -435,7 +434,7 @@ class Database:
         return user_ids
 
     async def get_payments_by_reg(self, reg_pay_id):
-        payment_data = await self.payments_collection.find_one({"reg_pay_id": reg_pay_id})
+        payment_data = await self.payments_collection.find_one({"_id": reg_pay_id})
 
         return payment_data
 
@@ -445,11 +444,11 @@ class Database:
 
     async def delete_payment(self, p_id):
         await self.check_if_payments_exists(p_id, raise_exception=True)
-        await self.payments_collection.delete_one({"reg_pay_id": p_id})
+        await self.payments_collection.delete_one({"_id": p_id})
 
     async def delete_payment_user(self, user_id):
         await self.check_if_payments_exists(user_id, raise_exception=True)
-        await self.payments_collection.delete_one({"_id": user_id})
+        await self.payments_collection.delete_many({"user_id": user_id})
 
     async def get_rate_attribute(self, rate_name, key: str):
         await self.check_if_rate_exists(rate_name, raise_exception=True)
@@ -491,6 +490,14 @@ class Database:
 
         dialog_dict = await self.dialog_collection.find_one({"_id": dialog_id, "user_id": user_id})
         return dialog_dict["messages"]
+
+    async def get_dialog_last(self, user_id: int, dialog_id: Optional[str] = None):
+        dialog_messages = await self.get_dialog_messages(user_id, dialog_id)
+
+        if dialog_messages != []:
+            return dialog_messages[-1]["date"]
+        else:
+            return datetime.now()
 
     async def set_feedback(self, user_id, dialog_id: str = None, feed: bool = None):
         dialoges = await self.get_dialog_messages(user_id, dialog_id)
@@ -543,20 +550,17 @@ class Database:
 
         rate_dict = await self.rate_collection.find_one({"_id": rate_name})
 
-        rate_models, user_models = rate_dict["models"], await self.get_user_attribute(user_id, "models")
-        new_models = list(set(rate_models) | set(user_models))
-
+        # rate_models, user_models = rate_dict["models"], await self.get_user_attribute(user_id, "models")
+        # new_models = list(set(rate_models) | set(user_models))
+        print(rate_dict)
         rate_n_tokens_monthly = rate_dict["n_tokens"] + await self.get_user_attribute(user_id, "n_tokens")
-        rate_n_rec_images = rate_dict["n_rec_images"]
-        rate_n_transcribed_seconds = rate_dict["n_transcribed_seconds"]
-        rate_n_generated_seconds = rate_dict["n_generated_seconds"]
+        rate_n_transcribed_seconds = rate_dict["n_transcribed_seconds"] + await self.get_user_attribute(user_id, "n_transcribed_seconds")
+        rate_n_generated_seconds = rate_dict["n_generated_seconds"] + await self.get_user_attribute(user_id, "n_generate_seconds")
 
         await self.user_collection.update_one({"_id": user_id}, {"$set": {
-            "models": new_models,
             "n_tokens": rate_n_tokens_monthly,
-            "n_rec_images": rate_n_rec_images,
             "n_transcribed_seconds": rate_n_transcribed_seconds,
-            "n_generated_seconds": rate_n_generated_seconds
+            "n_generate_seconds": rate_n_generated_seconds
         }})
 
     async def set_payment(self, user_id, rate_name):
@@ -591,10 +595,10 @@ class Database:
 
         await self.set_user_attribute(user_id, "last_pay", datetime.now())
         await self.set_user_attribute(user_id, "rate", rate_name)
-        await self.update_user(user_id)
+        await self.update_user(user_id, from_pay=True)
         await self.delete_payment_user(user_id)
 
-    async def update_user(self, user_id):
+    async def update_user(self, user_id, from_pay=False):
         await self.check_if_user_exists(user_id, raise_exception=True)
         await self.set_user_attribute(user_id, "last_interaction", datetime.now())
         rate_name = await self.get_user_attribute(user_id, "rate")
@@ -602,8 +606,15 @@ class Database:
         if rate_name == "free":
             return
 
+        # date_data = await self.get_rate_data(rate_name)
+        # rate_type = await
+        if from_pay:
+            await self.use_rate(rate_name, user_id)
+            await self.set_user_attribute(user_id, "last_update", datetime.now())
+
         if await self.check_payment(user_id):
-            if (datetime.now() - await self.get_user_attribute(user_id, "last_update")).days >= 30:
+            n_days = (datetime.now() - await self.get_user_attribute(user_id, "last_update")).days
+            if n_days >= 30:
                 await self.use_rate(rate_name, user_id)
                 await self.set_user_attribute(user_id, "last_update", datetime.now())
         else:
@@ -618,9 +629,8 @@ class Database:
                 await self.set_user_attribute(user_id, "last_update", datetime.now())
 
     async def accept_extend_rec_pay(self, user_id: int):
-        rate_name = await self.get_user_attribute(user_id, "rate")
-
         await self.check_if_user_exists(user_id, raise_exception=True)
+        rate_name = await self.get_user_attribute(user_id, "rate")
 
         if rate_name == "free":
             return
@@ -647,7 +657,7 @@ class Database:
     async def create_extend_recurrent_payment(self,
                                               user_id: int,
                                               rate_name: str,
-                                              url: str = "https://api2.ckassa.ru/api-shop/do/payment"):
+                                              url: str = "https://demo-api2.ckassa.ru/api-shop/do/payment"):
         user_token = await self.get_user_attribute(user_id, "userToken")
         user_phone = await self.get_user_attribute(user_id, "phone")
 
@@ -696,7 +706,8 @@ class Database:
             reg_response = await client.request(method="POST",
                                                 url=url,
                                                 headers=headers,
-                                                data=payload)
+                                                data=payload,
+                                                timeout=None)
 
             if reg_response.status_code == 200:
                 data_rec_pay = reg_response.json()
@@ -737,8 +748,8 @@ class Database:
         else:
             return False
 
-    async def make_credential(self,
-                              login: str,
+    @staticmethod
+    async def make_credential(login: str,
                               password: str):
         credential = f'{login}:{password}'
         encoded_credential = base64.b64encode(credential.encode("ascii"))
@@ -772,7 +783,8 @@ class Database:
             reg_response = await client.request(method="POST",
                                                 url=url,
                                                 headers=headers,
-                                                data=payload)
+                                                data=payload,
+                                                timeout=None)
 
             if reg_response.status_code == 200:
                 return reg_response.json()
@@ -782,7 +794,7 @@ class Database:
 
     async def get_active_user_cards(self,
                                     user_token: str,
-                                    url: str = "https://api2.ckassa.ru/api-shop/ver3/get/cards"):
+                                    url: str = "https://demo-api2.ckassa.ru/api-shop/ver3/get/cards"):
         headers = {
             'Content-Type': 'application/json',
             'Authorization': await self.make_credential(login=Config.shop_token,
@@ -798,7 +810,8 @@ class Database:
             reg_response = await client.request(method="POST",
                                                 url=url,
                                                 headers=headers,
-                                                data=payload)
+                                                data=payload,
+                                                timeout=None)
 
             if reg_response.status_code == 200:
                 cards_data = reg_response.json()
@@ -809,7 +822,7 @@ class Database:
                 raise RecurrentPaymentCheckError
 
     async def get_status_recurrent_payment(self,
-                                           url: str = "https://api2.ckassa.ru/api-shop/rs/shop/check/payment/state",
+                                           url: str = "https://demo-api2.ckassa.ru/api-shop/rs/shop/check/payment/state",
                                            reg_pay_num: int | str = None):
         if reg_pay_num is None:
             raise RecurrentPaymentCheckError
@@ -829,7 +842,8 @@ class Database:
             reg_response = await client.request(method="POST",
                                                 url=url,
                                                 headers=headers,
-                                                data=payload)
+                                                data=payload,
+                                                timeout=None)
 
             if reg_response.status_code == 200:
                 return reg_response.json()
@@ -838,7 +852,7 @@ class Database:
                 raise RecurrentPaymentCheckError
 
     async def confirm_payment(self,
-                              url: str = "https://api2.ckassa.ru/api-shop/provision-services/confirm",
+                              url: str = "https://demo-api2.ckassa.ru/api-shop/provision-services/confirm",
                               reg_pay_num: int | str = None,
                               order_id: int | str = None):
         if reg_pay_num is None or order_id is None:
@@ -859,7 +873,8 @@ class Database:
             reg_response = await client.request(method="POST",
                                                 url=url,
                                                 headers=headers,
-                                                data=payload)
+                                                data=payload,
+                                                timeout=None)
 
             if reg_response.status_code == 200:
                 return reg_response.json()
@@ -870,4 +885,6 @@ class Database:
 
 DataBase = Database()
 
-#asyncio.run(DataBase.add_admins_from_config())
+
+# a = asyncio.run(DataBase.check_payment(6925528772))
+# print(a)

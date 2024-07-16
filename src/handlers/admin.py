@@ -1,12 +1,13 @@
 import os
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, \
+    InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 
 from src.database import DataBase as db
-from src.handlers.states import AddKnowledge, RateForm, MassSend, AddPartner
+from src.handlers.states import AddKnowledge, RateForm, MassSend, AddPartner, ChangeRate
 from src.filters import AdminCheck
 from src.nn import KnowledgeLoader, OpenAIHelper
 from src.utils import ADMIN_HELP_MESSAGE, HELP_GROUP_CHAT_MESSAGE, \
@@ -26,10 +27,13 @@ from src.commands.admin import set_admin_commands_menu
 
 from datetime import datetime
 import asyncio
+import aiofiles
+import aiofiles.os
 import io
 from typing import Dict
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+import logging
 
 admin = Router()
 
@@ -62,10 +66,10 @@ async def start_admin_handle(message: Message):
 @admin.message(AdminCheck(), Command("help"))
 @admin.callback_query(AdminCheck(), F.data == "help_admin")
 async def help_admin_handle(message: Message):
-    user_id = message.from_user.id
+    admin_id = message.from_user.id
     await register_admin_in_db_as_user(message, admin_semaphores)
 
-    await db.set_user_attribute(user_id, "last_interaction", datetime.now())
+    await db.set_user_attribute(admin_id, "last_interaction", datetime.now())
     # reply_text = "Привет! Я <b>АгроБот</b> - бот, созданный для помощи агрономам! 🤖\n\n"
     reply_text = ADMIN_HELP_MESSAGE
     if isinstance(message, Message):
@@ -73,7 +77,7 @@ async def help_admin_handle(message: Message):
                              parse_mode="HTML",
                              reply_markup=get_help_keyboard())
     else:
-        await message.bot.send_message(chat_id=user_id,
+        await message.bot.send_message(chat_id=admin_id,
                                        text=reply_text,
                                        parse_mode="HTML",
                                        reply_markup=get_help_keyboard()
@@ -85,18 +89,35 @@ async def help_admin_handle(message: Message):
 async def notify_handler(message: Message | CallbackQuery, state: FSMContext):
     await register_admin_in_db_as_user(message, admin_semaphores)
     await state.set_state(MassSend.waiting_for_message)
+
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❌ Отменить рассылку",
+                             callback_data="cancel_notify")
+    ]])
     if isinstance(message, Message):
-        await message.answer('Отправьте сообщение, которое вы хотите разослать всем пользователям')
+        await message.answer(text='Отправьте сообщение, которое вы хотите разослать всем пользователям\n'
+                                  'Чтобы отменить уведомления пользователям во время рассылки, используйте комманду '
+                                  'отмены (/cancel)',
+                             reply_markup=cancel_kb
+                             )
     else:
         await message.answer('')
 
-        await message.bot.send_message(chat_id=message.from_user.id,
-                                       text='Отправьте сообщение, которое вы хотите разослать всем пользователям')
+        await message.message.answer(text='Отправьте сообщение, которое вы хотите разослать всем пользователям\n'
+                                          'Чтобы отменить уведомления пользователям во время '
+                                          'рассылки, используйте комманду отмены (/cancel).',
+                                     reply_markup=cancel_kb)
 
 
 @admin.message(AdminCheck(), MassSend.waiting_for_message)
-async def notify_message_handler(message: Message, state: FSMContext):
-    await message.answer('Подождите... идёт рассылка.')
+async def notify_message_handler(message: Message | CallbackQuery, state: FSMContext):
+    if isinstance(message, CallbackQuery) and message.data == "cancel_notify":
+        await state.clear()
+        await message.message.answer(text="✅ Рассылка остановлена",
+                                     parse_mode="HTML")
+        return
+
+    await message.answer('⏳ Подождите... идёт рассылка.')
 
     admin_id = message.from_user.id
 
@@ -107,7 +128,7 @@ async def notify_message_handler(message: Message, state: FSMContext):
             await message.send_copy(chat_id=_user_id)
 
         except Exception as e:
-            await message.answer(f"Произошла ошибка: <i>{e}</i> при отправлении пользователю <i>{_user_id}</i>",
+            await message.answer(f"❌ Произошла ошибка: <i>{e}</i> при отправлении пользователю <i>{_user_id}</i>",
                                  parse_mode="HTML")
 
     async def send_task():
@@ -161,26 +182,38 @@ async def admin_settings_handle(message: Message | CallbackQuery):
 @admin.callback_query(AdminCheck(), F.data.startswith("to_rates"))
 async def admin_rate_handler(message: Message | CallbackQuery):
     admin_id = message.from_user.id
+
     await register_admin_in_db_as_user(message, admin_semaphores)
 
     await db.set_user_attribute(admin_id, "last_interaction", datetime.now())
     rates = await db.get_all_rates()
 
     if isinstance(message, Message):
-        await show_rates_admin(message=message,
-                               text=ADMIN_RATE_TEXT,
-                               rates=rates,
-                               page=0)
+        await message.answer(text=ADMIN_RATE_TEXT,
+                             parse_mode="HTML",
+                             reply_markup=kb_rates_admin(rates).as_markup())
+        # await show_rates_admin(message=message,
+        #                        text=ADMIN_RATE_TEXT,
+        #                        rates=rates,
+        #                        page=0)
 
     else:
         await message.answer('')
 
-        await show_rates_admin(message=message.message,
-                               edit_id=message.message.message_id,
-                               text=ADMIN_RATE_TEXT,
-                               rates=rates,
-                               from_menu=(message.data == "to_rates_from_menu"),
-                               page=0)
+        await message.bot.edit_message_text(text=ADMIN_RATE_TEXT,
+                                            parse_mode="HTML",
+                                            chat_id=admin_id,
+                                            message_id=message.message.message_id,
+                                            reply_markup=kb_rates_admin(rates,
+                                                                        from_menu=(
+                                                                                message.data == "to_rates_from_menu")).as_markup())
+
+        # await show_rates_admin(message=message.message,
+        #                        edit_id=message.message.message_id,
+        #                        text=ADMIN_RATE_TEXT,
+        #                        rates=rates,
+        #                        from_menu=(message.data == "to_rates_from_menu"),
+        #                        page=0)
 
 
 @admin.callback_query(AdminCheck(), F.data.startswith("prev_rate_"))
@@ -219,6 +252,187 @@ async def rate_next_page_handler(callback: CallbackQuery):
                                          )
 
 
+@admin.callback_query(AdminCheck(), F.data.startswith("change_rate_"))
+async def change_rate_handle(callback: CallbackQuery, state: FSMContext):
+    rate_name = callback.data.split("_")[2]
+
+    await state.update_data(rate=rate_name)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Изменить количество токенов",
+                              callback_data=f"change_tokens")],
+        [InlineKeyboardButton(text="Изменить количество секунд на генерацию",
+                              callback_data=f"change_gen_sec")],
+        [InlineKeyboardButton(text="Изменить количество секунд на транскрипцию",
+                              callback_data=f"change_transcribe_sec")],
+        [InlineKeyboardButton(text="Изменить цену",
+                              callback_data=f"change_price")],
+        [InlineKeyboardButton(text="Изменить период оплаты",
+                              callback_data=f"change_type")],
+    ])
+
+    await callback.answer('')
+
+    await callback.message.answer(text="Чтобы изменить тариф, выберите необходимый пункт и введите или выберете "
+                                       f"новое значение параметра тарифа <b>{rate_name}</b>.",
+                                  parse_mode="HTML",
+                                  reply_markup=kb)
+
+
+@admin.callback_query(AdminCheck(), F.data.startswith("change_tokens"))
+async def change_count_tokens(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ChangeRate.waiting_for_n_tokens)
+    await callback.answer('')
+
+    await callback.message.answer(text="Введите новое количество токенов для тарифа:")
+
+
+@admin.message(AdminCheck(), ChangeRate.waiting_for_n_tokens)
+async def get_new_n_tokens(message: Message, state: FSMContext):
+    try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Обновление данных тарифа остановлено")
+            await state.clear()
+            return
+
+        n_tokens = int(message.text)
+
+    except:
+        await message.answer("❌ Ошибка, количество токенов должно быть целым числом, например: 1000\n"
+                             "Введите новое количество токенов или скажите 'отмена'.")
+
+    else:
+        data = await state.get_data()
+        rate = data["rate"]
+        await state.clear()
+        await db.set_rate_attribute(rate, "n_tokens", n_tokens)
+        await message.answer(text="✅ Данные успешно обновлены!")
+
+
+@admin.callback_query(AdminCheck(), F.data.startswith("change_price"))
+async def change_price(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ChangeRate.waiting_for_price)
+    await callback.answer('')
+
+    await callback.message.answer(text="Введите новую цену тарифа:")
+
+
+@admin.message(AdminCheck(), ChangeRate.waiting_for_price)
+async def get_change_price(message: Message, state: FSMContext):
+    try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Обновление данных тарифа остановлено")
+            await state.clear()
+            return
+
+        price = int(message.text)
+
+    except:
+        await message.answer("❌ Ошибка, цена должна быть целым числом, например: 1000\n"
+                             "Введите новую цену или скажите 'отмена'.")
+
+    else:
+        data = await state.get_data()
+        rate = data["rate"]
+        await state.clear()
+        await db.set_rate_attribute(rate, "price", price)
+        await message.answer(text="✅ Данные успешно обновлены!")
+
+
+@admin.callback_query(AdminCheck(), F.data.startswith("change_type"))
+async def change_type(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ChangeRate.waiting_for_type)
+    await callback.answer('')
+
+    await callback.message.answer(text="Выберите тип оплаты тарифа:",
+                                  reply_markup=get_type_rate())
+
+
+@admin.message(AdminCheck(), ChangeRate.waiting_for_type)
+async def get_change_type(message: Message | CallbackQuery, state: FSMContext):
+    try:
+        if isinstance(message, Message):
+            await message.answer(text="⛔ Обновление данных тарифа остановлено")
+            await state.clear()
+            return
+
+        type_ = message.data
+
+    except:
+        await message.answer("❌ Ошибка при обработке изменения тарифа.")
+
+    else:
+
+        data = await state.get_data()
+        rate = data["rate"]
+        await state.clear()
+        await db.set_rate_attribute(rate, "type", type_)
+
+        await message.message.answer(text="✅ Данные успешно обновлены!")
+
+
+@admin.callback_query(AdminCheck(), F.data.startswith("change_transcribe_sec"))
+async def change_transcribe_sec(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ChangeRate.waiting_for_n_transcribed_seconds)
+    await callback.answer('')
+
+    await callback.message.answer(text="Введите новое количество секунд на транскрипцию для тарифа:")
+
+
+@admin.message(AdminCheck(), ChangeRate.waiting_for_n_transcribed_seconds)
+async def get_new_change_transcribe_sec(message: Message, state: FSMContext):
+    try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Обновление данных тарифа остановлено")
+            await state.clear()
+            return
+
+        n_tokens = float(message.text)
+
+    except:
+        await message.answer(
+            "❌ Ошибка, количество секунд на транскрипцию должно быть целым или дробным числом, например: 1000"
+            "\nВведите новое количество секунд на транскрипцию или скажите 'отмена'.")
+
+    else:
+        data = await state.get_data()
+        rate = data["rate"]
+        await state.clear()
+        await db.set_rate_attribute(rate, "n_transcribed_seconds", n_tokens)
+        await message.answer(text="✅ Данные успешно обновлены!")
+
+
+@admin.callback_query(AdminCheck(), F.data.startswith("change_gen_sec"))
+async def change_gen_sec(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ChangeRate.waiting_for_n_generated_seconds)
+    await callback.answer('')
+
+    await callback.message.answer(text="Введите новое количество секунд на генерацию для тарифа:")
+
+
+@admin.message(AdminCheck(), ChangeRate.waiting_for_n_generated_seconds)
+async def get_new_change_gen_sec(message: Message, state: FSMContext):
+    try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Обновление данных тарифа остановлено")
+            await state.clear()
+            return
+
+        n_tokens = float(message.text)
+
+    except:
+        await message.answer(
+            "❌ Ошибка, количество секунд на генерацию должно быть целым или дробным числом, например: 1000"
+            "\nВведите новое количество секунд на генерацию или скажите 'отмена'.")
+
+    else:
+        data = await state.get_data()
+        rate = data["rate"]
+        await state.clear()
+        await db.set_rate_attribute(rate, "n_generated_seconds", n_tokens)
+        await message.answer(text="✅ Данные успешно обновлены!")
+
+
 @admin.callback_query(AdminCheck(), F.data == "add_rate")
 async def add_rate_callback(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.bot.delete_message(chat_id=callback_query.from_user.id,
@@ -233,10 +447,15 @@ async def add_rate_callback(callback_query: CallbackQuery, state: FSMContext):
 async def process_name(message: Message, state: FSMContext):
     try:
         name = message.text
+        if name.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание нового тарифа остановлено")
+            await state.clear()
+            return
+
         if await db.check_if_rate_exists(name=name):
             raise
     except:
-        m = await message.answer("Ошибка, название тарифа должно быть уникальным")
+        m = await message.answer("❌ Ошибка, название тарифа должно быть уникальным")
         data = await state.get_data()
         ids = [message.message_id, m.message_id] + data["id_for_delete"]
         await state.update_data(id_for_delete=ids)
@@ -254,10 +473,15 @@ async def process_name(message: Message, state: FSMContext):
 @admin.message(AdminCheck(), RateForm.waiting_for_n_tokens)
 async def process_n_tokens(message: Message, state: FSMContext):
     try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание нового тарифа остановлено")
+            await state.clear()
+            return
+
         await state.update_data(n_tokens=int(message.text))
 
     except:
-        m = await message.answer("Ошибка, количество токенов должно быть целым числом, например: 10000")
+        m = await message.answer("❌ Ошибка, количество токенов должно быть целым числом, например: 10000")
         data = await state.get_data()
         ids = [message.message_id, m.message_id] + data["id_for_delete"]
         await state.update_data(id_for_delete=ids)
@@ -274,11 +498,16 @@ async def process_n_tokens(message: Message, state: FSMContext):
 @admin.message(AdminCheck(), RateForm.waiting_for_n_transcribed_seconds)
 async def process_n_transcribed_seconds(message: Message, state: FSMContext):
     try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание нового тарифа остановлено")
+            await state.clear()
+            return
+
         await state.update_data(n_transcribed_seconds=float(message.text))
 
     except:
-        m = await message.answer("Ошибка, количество секунд на транскрипцию должно быть \
-        целым числом или числом с плавающей точкой, например: 10000.0")
+        m = await message.answer("❌ Ошибка, количество секунд на транскрипцию должно быть "
+                                 "целым числом или числом с плавающей точкой, например: 10000.0")
         data = await state.get_data()
         ids = [message.message_id, m.message_id] + data["id_for_delete"]
         await state.update_data(id_for_delete=ids)
@@ -295,11 +524,17 @@ async def process_n_transcribed_seconds(message: Message, state: FSMContext):
 @admin.message(AdminCheck(), RateForm.waiting_for_n_generated_seconds)
 async def process_n_generated_seconds(message: Message, state: FSMContext):
     try:
+
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание нового тарифа остановлено")
+            await state.clear()
+            return
+
         await state.update_data(n_generated_seconds=float(message.text))
 
     except:
-        m = await message.answer("Ошибка, количество секунд на генерацию должно быть \
-        целым числом или числом с плавающей точкой, например: 10000.0")
+        m = await message.answer("❌ Ошибка, количество секунд на генерацию должно быть "
+                                 "целым числом или числом с плавающей точкой, например: 10000.0")
         data = await state.get_data()
         ids = [message.message_id, m.message_id] + data["id_for_delete"]
         await state.update_data(id_for_delete=ids)
@@ -315,10 +550,15 @@ async def process_n_generated_seconds(message: Message, state: FSMContext):
 @admin.message(AdminCheck(), RateForm.waiting_for_price)
 async def process_price(message: Message, state: FSMContext):
     try:
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание нового тарифа остановлено")
+            await state.clear()
+            return
+
         await state.update_data(price=float(message.text))
 
     except:
-        m = await message.answer("Ошибка, количество токенов должно быть целым числом")
+        m = await message.answer("❌ Ошибка, количество токенов должно быть числом")
         data = await state.get_data()
         ids = [message.message_id, m.message_id] + data["id_for_delete"]
         await state.update_data(id_for_delete=ids)
@@ -334,20 +574,29 @@ async def process_price(message: Message, state: FSMContext):
 
 
 @admin.callback_query(AdminCheck(), RateForm.waiting_for_type, F.data.startswith("type_"))
-async def process_type(message: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+async def process_type(message: CallbackQuery | Message, state: FSMContext):
     try:
-        type_ = message.data.split("_")[1]
+
+        if isinstance(message, Message) and message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание нового тарифа остановлено")
+            await state.clear()
+            return
+
+        if isinstance(message, CallbackQuery):
+            type_ = message.data.split("_")[1]
+        else:
+            type_ = message.text
 
     except:
         if isinstance(message, CallbackQuery):
-            m = await message.message.answer("Ошибка, тип тарифа долже быть либо 'месячный' либо 'годовой'")
+            m = await message.message.answer("❌ Ошибка, тип тарифа долже быть либо 'месячный' либо 'годовой'")
         else:
-            m = await message.answer("Ошибка, тип тарифа долже быть либо 'месячный' либо 'годовой'")
+            m = await message.answer("❌ Ошибка, тип тарифа долже быть либо 'месячный' либо 'годовой'")
         data = await state.get_data()
         ids = [message.message_id, m.message_id] + data["id_for_delete"]
         await state.update_data(id_for_delete=ids)
     else:
+        data = await state.get_data()
         await db.add_new_rate(
             name=data['name'],
             n_tokens=data['n_tokens'],
@@ -360,16 +609,14 @@ async def process_type(message: CallbackQuery, state: FSMContext):
         await message.bot.delete_messages(chat_id=message.from_user.id,
                                           message_ids=data["id_for_delete"] + [message.message.message_id])
 
-        await message.answer(f"✅ Новый тариф <i>{data['name']}</i>  добавлен", parse_mode="HTML")
+        await message.message.answer(text=f"✅ Новый тариф <i>{data['name']}</i>  добавлен",
+                                     parse_mode="HTML")
         await state.clear()
         rates = await db.get_all_rates()
 
-        await show_rates_admin(message=message.message,
-                               edit_id=message.message.message_id,
-                               text=ADMIN_RATE_TEXT,
-                               rates=rates,
-                               from_menu=True,
-                               page=0)
+        await message.message.answer(text=ADMIN_RATE_TEXT,
+                                     parse_mode="HTML",
+                                     reply_markup=kb_rates_admin(rates).as_markup())
 
 
 @admin.callback_query(F.data.startswith("edit_rate_"))
@@ -427,50 +674,88 @@ async def adding_knowledge_handler(message: Message | CallbackQuery):
 @admin.callback_query(AdminCheck(), F.data == "knowledge_youtube")
 async def knowledge_youtube_handler(callback_query: CallbackQuery, state: FSMContext):
     await state.set_state(AddKnowledge.waiting_for_youtube)
-    await callback_query.message.answer("Введите ссылку на ютуб видео или плейлист:")
+    await callback_query.message.answer("<b>Введите ссылку на ютуб видео или плейлист:</b>",
+                                        parse_mode="HTML")
 
 
 @admin.message(AdminCheck(), AddKnowledge.waiting_for_youtube)
 async def process_youtube(message: Message, state: FSMContext):
     try:
         y_link = message.text
+
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание новых знаний остановлено")
+            await state.clear()
+            return
+
+        placeholder_message = await message.answer("⏳ Подождите, запрос обрабатывается...",
+                                                   parse_mode="HTML")
+        await message.bot.send_chat_action(chat_id=message.from_user.id,
+                                           action="typing")
+
         vs_id = await knowledge_loader.load_knowledge_youtube(url_youtube=y_link)
 
-    except:
-        await message.answer("Произошла ошибка при обработке, попробуйте снова")
 
+    except:
+        await message.bot.edit_message_text(text="❌ Что-то пошло не так при обработке видео или плейлиста, "
+                                                 "проверьте, является ли предоставленная ссылка youtube-ссылкой или "
+                                                 "являются ли видео или плейлист публичными.\nОтправьте новую ссылку "
+                                                 "или скажите 'Отмена'",
+                                            chat_id=message.from_user.id,
+                                            message_id=placeholder_message.message_id)
 
     else:
-        await message.answer(f"✅ Новые знания успешно добавлены!",
-                             parse_mode="HTML")
-        await state.clear()
+        await message.bot.edit_message_text(f"✅ Новые знания успешно добавлены!\nID знаний: {vs_id}",
+                                            parse_mode="HTML",
+                                            chat_id=message.from_user.id,
+                                            message_id=placeholder_message.message_id)
 
 
 @admin.callback_query(AdminCheck(), F.data == "knowledge_gdrive")
 async def knowledge_gdrive_handler(callback_query: CallbackQuery, state: FSMContext):
     await state.set_state(AddKnowledge.waiting_for_gdrive)
-    await callback_query.message.answer("Введите ссылку на общедоступный файл или папку Гугл Диск:")
+    await callback_query.message.answer("<b>Введите ссылку на общедоступный файл или папку Гугл Диск:</b>",
+                                        parse_mode="HTML")
 
 
 @admin.message(AdminCheck(), AddKnowledge.waiting_for_gdrive)
 async def process_gdrive(message: Message, state: FSMContext):
     try:
         g_link = message.text
+
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание новых знаний остановлено")
+            await state.clear()
+            return
+
+        placeholder_message = await message.answer("⏳ Подождите, запрос обрабатывается...",
+                                                   parse_mode="HTML")
+        await message.bot.send_chat_action(chat_id=message.from_user.id,
+                                           action="typing")
+
         vs_id = await knowledge_loader.load_knowledge_gdrive(gdrive_url=g_link)
 
     except:
-        await message.answer("Произошла ошибка при обработке, попробуйте снова")
+        await message.bot.delete_message(chat_id=message.from_user.id,
+                                         message_id=placeholder_message.message_id)
+        await message.bot.send_photo(chat_id=message.from_user.id,
+                                     photo=FSInputFile(Config.gdrive_example_path),
+                                     caption="❌ Произошла ошибка при обработке запроса, "
+                                             "отправьте ссылку на общедоступный файл или папку с "
+                                             "правами редактора или скажите 'Отмена'")
 
     else:
-        await message.answer(f"✅ Новые знания успешно добавлены!",
-                             parse_mode="HTML")
-        await state.clear()
+        await message.bot.edit_message_text(f"✅ Новые знания успешно добавлены!\nID знаний: {vs_id}",
+                                            parse_mode="HTML",
+                                            chat_id=message.from_user.id,
+                                            message_id=placeholder_message.message_id)
 
 
 @admin.callback_query(AdminCheck(), F.data == "knowledge_file")
 async def knowledge_file_handler(callback_query: CallbackQuery, state: FSMContext):
     await state.set_state(AddKnowledge.waiting_for_file)
-    await callback_query.message.answer("Скиньте боту файл, который вы хотите загрузить в базу знаний:")
+    await callback_query.message.answer("<b>Скиньте боту файл, который вы хотите загрузить в базу знаний:</b>",
+                                        parse_mode="HTML")
 
 
 @admin.message(AdminCheck(), AddKnowledge.waiting_for_file)
@@ -485,37 +770,78 @@ async def process_file(message: Message, state: FSMContext):
                                      destination=f_data)
         f_data.seek(0)
 
+        placeholder_message = await message.answer("⏳ Подождите, запрос обрабатывается...",
+                                                   parse_mode="HTML")
+        await message.bot.send_chat_action(chat_id=message.from_user.id,
+                                           action="typing")
+
         vs_id = await knowledge_loader.load_knowledge_file(file_data=f_data,
                                                            name_of_file=file.file_name)
 
     except:
-        await message.answer("Произошла ошибка при обработке, попробуйте снова")
+
+        await message.bot.edit_message_text(text="❌ Произошла ошибка при обработке файла, возможно его "
+                                                 "расширение не соответствует допустимым.\nПосмотреть допустимые "
+                                                 'расширения на данный момент можно '
+                                                 '<a href="https://platform.openai.com/docs/assistants/tools/file-search/supported-files">здесь</a> '
+                                                 '(нужен VPN).',
+                                            parse_mode="HTML",
+                                            chat_id=message.from_user.id,
+                                            message_id=placeholder_message.message_id)
 
     else:
-        await message.answer(f"✅ Новые знания успешно добавлены!",
-                             parse_mode="HTML")
-        await state.clear()
+
+        await message.bot.edit_message_text(f"✅ Новые знания успешно добавлены!\nID знаний: {vs_id}",
+                                            parse_mode="HTML",
+                                            chat_id=message.from_user.id,
+                                            message_id=placeholder_message.message_id)
 
 
 @admin.message(AdminCheck(), Command("partner"))
 @admin.callback_query(AdminCheck(), F.data == "partner")
-async def knowledge_gdrive_handler(callback_query: CallbackQuery, state: FSMContext):
+async def knowledge_partner_handler(callback_query: CallbackQuery | Message, state: FSMContext):
     await state.set_state(AddKnowledge.waiting_for_gdrive)
-    await callback_query.message.answer("Введите ссылку на общедоступный файл или папку Гугл Диск:")
+    if isinstance(callback_query, CallbackQuery):
+        await callback_query.message.answer("<b>Введите ссылку на общедоступный файл или папку Гугл Диск:</b>",
+                                            parse_mode="HTML")
+    else:
+        await callback_query.answer("<b>Введите ссылку на общедоступный файл или папку Гугл Диск:</b>",
+                                    parse_mode="HTML")
 
 
 @admin.message(AdminCheck(), AddPartner.waiting_for_link)
-async def process_gdrive(message: Message, state: FSMContext):
+async def process_partner(message: Message, state: FSMContext):
     try:
         g_link = message.text
-        vs_id = await knowledge_loader.load_partner(url=g_link)
+        if message.text.lower() in ["отмена", "стоп", "остановить"]:
+            await message.answer(text="⛔ Создание новых партнерских знаний остановлено")
+            await state.clear()
+            return
+
+        placeholder_message = await message.answer("⏳ Подождите, запрос обрабатывается...",
+                                                   parse_mode="HTML")
+        await message.bot.send_chat_action(chat_id=message.from_user.id,
+                                           action="typing")
+
+        vs_id = await knowledge_loader.load_partner(gdrive_url=g_link)
 
     except:
-        await message.answer("Произошла ошибка при обработке, попробуйте снова")
+
+        await message.bot.delete_message(chat_id=message.from_user.id,
+                                         message_id=placeholder_message.message_id)
+
+        await message.answer_photo(photo=FSInputFile(path=Config.gdrive_example_path),
+                                   caption="❌ Произошла ошибка при обработке запроса, "
+                                           "отправьте ссылку на общедоступный файл или папку с "
+                                           "правами редактора или скажите 'Отмена'")
+
 
     else:
-        await message.answer(f"✅ Новые партнерские данные успешно добавлены!",
-                             parse_mode="HTML")
+        await message.bot.edit_message_text(f"✅ Новые знания успешно добавлены!\nID партнерских данных: {vs_id}",
+                                            parse_mode="HTML",
+                                            chat_id=message.from_user.id,
+                                            message_id=placeholder_message.message_id)
+
         await state.clear()
 
 
@@ -551,7 +877,7 @@ async def get_stats_plot_admin(message: CallbackQuery):
     admin_id = message.from_user.id
 
     data_ = message.data.split("_")[2]
-    dir_ = f"../stats/plots/{data_}"#os.path.join(Config.base_plot_path, data_)
+    dir_ = f"../stats/plots/{data_}"  # os.path.join(Config.base_plot_path, data_)
 
     await message.answer(f"Данные на {data_}")
 
@@ -602,6 +928,8 @@ async def retry_handle_admin(message: Message):
 
 
 async def _voice_admin(message: Message):
+
+
     admin_id = message.from_user.id
     await register_admin_in_db_as_user(message, admin_semaphores)
 
@@ -620,16 +948,19 @@ async def _voice_admin(message: Message):
     buf.seek(0)
 
     try:
-        transcribed_text = openai_helper.transcribe(buf)
+        transcribed_text = await openai_helper.transcribe(buf)
     except:
-        await message.answer("Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
-                                            обработке голоса!\nПопробуйте снова или обратитесь в тех. поддержку:",
+        await message.answer("❌ Хьюстон, у нас проблемы!\nЧто-то пошло не так при "
+                             "обработке голоса!\nПопробуйте снова или обратитесь в тех. поддержку:",
                              reply_markup=get_help_keyboard(),
                              parse_mode="HTML")
     else:
-        text = f"🎤: <i>{transcribed_text}</i>"
+        text = f"🎤: <code>{transcribed_text}</code>"
         await message.answer(text=text,
                              parse_mode="HTML")
+
+        await db.update_spend(admin_id,
+                              n_transcribed_seconds=voice.duration)
 
         await _message_handle_admin(message=message,
                                     context=text)
@@ -671,7 +1002,7 @@ async def _file_analyze_admin(message: Message):
             elif file_extension == '.pdf':
                 content = await asyncio.get_running_loop().run_in_executor(executor, extract_pdf_text, file_bytes)
             else:
-                await message.answer("Упс! Не поддерживаемый формат файла.\
+                await message.answer("❌ Упс! Не поддерживаемый формат файла.\
                                      (Поддерживаются только '.docx', '.xlsx', '.pptx', '.pdf', '.csv', '.txt')")
                 return
 
@@ -680,7 +1011,7 @@ async def _file_analyze_admin(message: Message):
                              parse_mode="HTML")
 
     except Exception as e:
-        await message.answer("Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
+        await message.answer("❌ Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
                                             обработке файла!\nПопробуйте снова или обратитесь в тех. поддержку:",
                              reply_markup=get_help_keyboard(),
                              parse_mode="HTML")
@@ -728,15 +1059,16 @@ async def _photo_analyze_admin(message: Message):
     photo_file = await message.bot.get_file(photo.file_id)
     photo_path = photo_file.file_path
 
-    buf = io.BytesIO()
+    async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix="." + photo_path.split(".")[-1]) as temp_photo:
+        name = temp_photo.name
+
     await message.bot.download_file(file_path=photo_path,
-                                    destination=buf)
-    buf.name = "photo.jpg"
-    buf.seek(0)
+                                    destination=name)
+    # buf.name =
 
     # message handle
     await _message_handle_admin(message=message,
-                                image=buf)
+                                image=name)
 
 
 async def _message_handle_admin(message: Message,
@@ -749,7 +1081,8 @@ async def _message_handle_admin(message: Message,
         admin_id = message.from_user.id
         current_model = await db.get_user_attribute(admin_id, "current_model")
         if use_new_dialog_timeout:
-            if (datetime.now() - await db.get_user_attribute(admin_id, "last_interaction")).seconds > \
+            last_message = await db.get_dialog_last(user_id=admin_id)
+            if (datetime.now() - last_message).seconds > \
                     Config.new_dialog_timeout and len(await db.get_dialog_messages(user_id=admin_id)) > 0:
                 await db.start_new_dialog(admin_id)
 
@@ -758,7 +1091,7 @@ async def _message_handle_admin(message: Message,
 
         await db.set_user_attribute(admin_id, "last_interaction", datetime.now())
 
-        message_text = "" or message.text
+        message_text = message.text
         if message_text == "" and image is None and video is None:
             await message.answer("🥲 Вы отправили <b>пустое сообщение</b>. Попробуйте снова!",
                                  parse_mode="HTML")
@@ -769,12 +1102,13 @@ async def _message_handle_admin(message: Message,
         if context is not None:
             message_text = f"Контекст: {context}\nПользователь: {message_text}"
 
-        placeholder_message = await message.answer("Подождите, пока нейросеть обработает ваш запрос",
+        placeholder_message = await message.answer("⏳ Подождите, пока нейросеть обработает ваш запрос",
                                                    parse_mode="HTML")
         await message.bot.send_chat_action(chat_id=admin_id,
                                            action="typing")
 
-        answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed, is_voice = await openai_helper.send_message_assistant(
+        answer, (n_input_tokens,
+                 n_output_tokens), n_first_dialog_messages_removed, is_voice = await openai_helper.send_message_assistant(
             message=message_text,
             dialog_messages=dialog_messages,
             image_buffer=image,
@@ -787,18 +1121,19 @@ async def _message_handle_admin(message: Message,
         raise
 
     except Exception as e:
-
-        await message.answer("Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
-                            обработке запроса!\nПопробуйте снова или обратитесь в тех. поддержку:",
+        logging.exception(e)
+        await message.answer("❌  Хьюстон, у нас проблемы!\nЧто-то пошло не так при "
+                             "обработке запроса!\nПопробуйте снова или обратитесь в тех. поддержку:",
                              reply_markup=get_help_keyboard(),
                              parse_mode="HTML")
     else:
 
         if is_voice:
+
             await message.bot.delete_message(chat_id=admin_id,
                                              message_id=placeholder_message.message_id)
 
-            audio_path, _ = await openai_helper.generate_speech(text=answer)
+            audio_path, gen_second = await openai_helper.generate_speech(text=answer)
 
             await message.bot.send_voice(
                 chat_id=admin_id,
@@ -806,6 +1141,8 @@ async def _message_handle_admin(message: Message,
                 reply_markup=get_feed_kb(user_id=admin_id,
                                          dialog_id=await db.get_user_attribute(user_id=admin_id,
                                                                                key="current_dialog_id")))
+            await db.update_spend(user_id=admin_id,
+                                  n_generate_seconds=gen_second)
 
         else:
 
@@ -813,7 +1150,7 @@ async def _message_handle_admin(message: Message,
                 text=answer,
                 chat_id=admin_id,
                 message_id=placeholder_message.message_id,
-                parse_mode="MARKDOWN",
+                parse_mode="HTML",
                 reply_markup=get_feed_kb(user_id=admin_id,
                                          dialog_id=await db.get_user_attribute(user_id=admin_id,
                                                                                key="current_dialog_id")))
@@ -823,25 +1160,35 @@ async def _message_handle_admin(message: Message,
                               "bot": answer,
                               "date": datetime.now(),
                               "feed": None}
+        dialog_messages = await db.get_dialog_messages(admin_id, dialog_id=None)
+
+        dialog_messages = dialog_messages[n_first_dialog_messages_removed:] + [new_dialog_message]
 
         await db.set_dialog_messages(
             user_id=admin_id,
-            dialog_messages=await db.get_dialog_messages(admin_id, dialog_id=None)[
-                                  n_first_dialog_messages_removed:].append(
-                new_dialog_message),
+            dialog_messages=dialog_messages,
             dialog_id=None
         )
+        await db.update_spend(user_id=admin_id,
+                              n_used_tokens=n_input_tokens + n_output_tokens)
+
+        old_spend_token = await db.get_user_attribute(admin_id, "n_used_tokens")
+        old_spend_token["n_input_tokens"] += n_input_tokens
+        old_spend_token["n_output_tokens"] += n_output_tokens
+
+        await db.set_user_attribute(admin_id, "n_used_tokens", old_spend_token)
 
         # await db.update_n_used_tokens(admin_id, current_model, n_input_tokens, n_output_tokens)
 
         if n_first_dialog_messages_removed > 0:
             if n_first_dialog_messages_removed == 1:
-                text = "✍️ <i>Уведомление:</i> Ваш текущий диалог слишком большой, ваше <b>первое сообщение</b> \
-                было удалено из контекста.\n Отправьте команду /new чтобы создать новый диалог."
+                text = "📝️ <i>Уведомление:</i> Ваш текущий диалог слишком большой, ваше <b>первое сообщение</b> " \
+                       "было удалено из контекста.\n Отправьте команду /new чтобы создать новый диалог."
             else:
-                text = f"✍️ <i>Уведомление:</i> Ваш текущий диалог \
-                слишком большой, ваши <b>{n_first_dialog_messages_removed} \
-                первые сообщения</b> были удалены из контекста.\n Отправьте команду /new чтобы создать новый диалог."
+                text = f"📝️ <i>Уведомление:</i> Ваш текущий диалог " \
+                       f"слишком большой, ваши <b>{n_first_dialog_messages_removed} " \
+                       f"первые сообщения</b> были удалены из контекста.\n " \
+                       f"Отправьте команду /new чтобы создать новый диалог."
             await message.answer(text, parse_mode="HTML")
 
 

@@ -47,7 +47,8 @@ async def registr_user(url: str = "https://demo-api2.ckassa.ru/api-shop/user/reg
         reg_response = await client.request(method="POST",
                                             url=url,
                                             headers=headers,
-                                            data=payload)
+                                            data=payload,
+                                            timeout=None)
 
         if reg_response.status_code == 200:
             return reg_response.json()
@@ -57,7 +58,7 @@ async def registr_user(url: str = "https://demo-api2.ckassa.ru/api-shop/user/reg
 
 
 async def get_active_user_cards(user_token: str,
-                                url: str = "https://api2.ckassa.ru/api-shop/ver3/get/cards"):
+                                url: str = "https://demo-api2.ckassa.ru/api-shop/ver3/get/cards"):
     headers = {
         'Content-Type': 'application/json',
         'Authorization': await make_credential(login=Config.shop_token,
@@ -73,7 +74,8 @@ async def get_active_user_cards(user_token: str,
         reg_response = await client.request(method="POST",
                                             url=url,
                                             headers=headers,
-                                            data=payload)
+                                            data=payload,
+                                            timeout=None)
 
         if reg_response.status_code == 200:
             cards_data = reg_response.json()
@@ -84,7 +86,7 @@ async def get_active_user_cards(user_token: str,
             raise RecurrentPaymentCheckError
 
 
-async def get_status_recurrent_payment(url: str = "https://api2.ckassa.ru/api-shop/rs/shop/check/payment/state",
+async def get_status_recurrent_payment(url: str = "https://demo-api2.ckassa.ru/api-shop/rs/shop/check/payment/state",
                                        reg_pay_num: int | str = None):
     if reg_pay_num is None:
         raise RecurrentPaymentCheckError
@@ -104,7 +106,8 @@ async def get_status_recurrent_payment(url: str = "https://api2.ckassa.ru/api-sh
         reg_response = await client.request(method="POST",
                                             url=url,
                                             headers=headers,
-                                            data=payload)
+                                            data=payload,
+                                            timeout=None)
 
         if reg_response.status_code == 200:
             return reg_response.json()
@@ -113,7 +116,7 @@ async def get_status_recurrent_payment(url: str = "https://api2.ckassa.ru/api-sh
             raise RecurrentPaymentCheckError
 
 
-async def confirm_payment(url: str = "https://api2.ckassa.ru/api-shop/provision-services/confirm",
+async def confirm_payment(url: str = "https://demo-api2.ckassa.ru/api-shop/provision-services/confirm",
                           reg_pay_num: int | str = None,
                           order_id: int | str = None):
     if reg_pay_num is None or order_id is None:
@@ -134,7 +137,8 @@ async def confirm_payment(url: str = "https://api2.ckassa.ru/api-shop/provision-
         reg_response = await client.request(method="POST",
                                             url=url,
                                             headers=headers,
-                                            data=payload)
+                                            data=payload,
+                                            timeout=None)
 
         if reg_response.status_code == 200:
             return reg_response.json()
@@ -143,10 +147,9 @@ async def confirm_payment(url: str = "https://api2.ckassa.ru/api-shop/provision-
             raise ConfirmPaymentError
 
 
-async def create_new_recurrent_payment(message: Message,
+async def create_new_recurrent_payment(user_id: int,
                                        rate_name: str,
-                                       url: str = "https://api2.ckassa.ru/api-shop/do/payment", ):
-    user_id = message.from_user.id
+                                       url: str = "https://demo-api2.ckassa.ru/api-shop/do/payment", ):
     user_token = await db.get_user_attribute(user_id, "userToken")
     user_phone = await db.get_user_attribute(user_id, "phone")
 
@@ -154,10 +157,9 @@ async def create_new_recurrent_payment(message: Message,
         raise PaymentCreationError
 
     if user_token is None:
-        callback_api = await registr_user(phone_number=user_phone,
-                                          name=message.from_user.first_name,
-                                          surname=message.from_user.last_name)
+        callback_api = await registr_user(phone_number=user_phone)
         user_token = callback_api["userToken"]
+        await db.set_user_attribute(user_id, "userToken", user_token)
 
     rate_data = await db.get_rate_data(rate_name=rate_name)
 
@@ -181,11 +183,18 @@ async def create_new_recurrent_payment(message: Message,
         "payType": "card",
         "needRegCard": True,
         "orderNote": f"Оплата тарифа {rate_name}",
-        "successUrl": Config.main_bot_url,
-        "failUrl": Config.main_bot_url,
-        "cbUrl": Config.notification_url,
+        # "successUrl": Config.main_bot_url,
+        # "failUrl": Config.main_bot_url,
+        # "cbUrl": Config.notification_url,
         "properties": [
-
+            {
+                "name": "ЛИЦЕВОЙ_СЧЕТ",
+                "value": 12987492
+            },
+            {
+                "name": "ИДЕНТИФИКАТОР",
+                "value": 101
+            }
         ]
     })
     async with httpx.AsyncClient() as client:
@@ -193,7 +202,8 @@ async def create_new_recurrent_payment(message: Message,
         reg_response = await client.request(method="POST",
                                             url=url,
                                             headers=headers,
-                                            data=payload)
+                                            data=payload,
+                                            timeout=None)
 
         if reg_response.status_code == 200:
             data_rec_pay = reg_response.json()
@@ -205,7 +215,7 @@ async def create_new_recurrent_payment(message: Message,
 
 async def create_extend_recurrent_payment(user_id: int,
                                           rate_name: str,
-                                          url: str = "https://api2.ckassa.ru/api-shop/do/payment"):
+                                          url: str = "https://demo-api2.ckassa.ru/api-shop/do/payment"):
     user_token = await db.get_user_attribute(user_id, "userToken")
     user_phone = await db.get_user_attribute(user_id, "phone")
 
@@ -241,11 +251,16 @@ async def create_extend_recurrent_payment(user_id: int,
         "payType": "card",
         "needRegCard": False,
         "orderNote": f"Оплата тарифа {rate_name}",
-        "successUrl": Config.main_bot_url,
-        "failUrl": Config.main_bot_url,
         "cbUrl": Config.notification_url,
         "properties": [
-
+            {
+                "name": "ЛИЦЕВОЙ_СЧЕТ",
+                "value": 12987492
+            },
+            {
+                "name": "ИДЕНТИФИКАТОР",
+                "value": 101
+            }
         ]
     })
 
@@ -254,7 +269,8 @@ async def create_extend_recurrent_payment(user_id: int,
         reg_response = await client.request(method="POST",
                                             url=url,
                                             headers=headers,
-                                            data=payload)
+                                            data=payload,
+                                            timeout=None)
 
         if reg_response.status_code == 200:
             data_rec_pay = reg_response.json()
@@ -279,7 +295,11 @@ async def processing_payments(data_rec_pay: dict,
 
     while status_data["state"] not in ["payed", "holded", "processed", "error"]:
         status_data = await get_status_recurrent_payment(reg_pay_num=reg_pay_num)
+
+        if (datetime.datetime.now() - start_time).seconds >= 3600:
+            return False
         await asyncio.sleep(0.5)
+
 
     if status_data["state"] in ["payed", "processed"]:
         return True
@@ -287,7 +307,7 @@ async def processing_payments(data_rec_pay: dict,
     elif status_data["state"] == "holded":
 
         unhold_data = await confirm_payment(reg_pay_num=reg_pay_num,
-                                            order_id=...)
+                                            order_id=11)
         if unhold_data["resultState"] == "success":
             return True
         else:
@@ -295,6 +315,73 @@ async def processing_payments(data_rec_pay: dict,
     else:
         return False
 
+
+
+
+async def create_new_recurrent_payment_test(rate_name: str,
+                                            url: str = "https://demo-api2.ckassa.ru/api-shop/do/payment", ):
+    user_id = 6925528772
+    user_token = await db.get_user_attribute(user_id, "userToken")
+    user_phone = await db.get_user_attribute(user_id, "phone")
+
+    if user_token is None and user_phone is None:
+        raise PaymentCreationError
+
+    if user_token is None:
+        callback_api = await registr_user(phone_number=user_phone)
+        user_token = callback_api["userToken"]
+
+    rate_data = await db.get_rate_data(rate_name=rate_name)
+
+    amount = rate_data["price"] * 100
+
+    # available_cards = await get_active_user_cards(user_token=user_token)
+    # need_reg = True
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': await make_credential(login=Config.shop_token,
+                                               password=Config.sec_key)
+    }
+
+    payload = json.dumps({
+        "serviceCode": Config.service_code,
+        "userToken": user_token,
+        "clientType": "mobile",
+        "amount": amount,
+        "comission": "0",
+        "payType": "card",
+        "needRegCard": True,
+        "orderNote": f"Оплата тарифа {rate_name}",
+        # "successUrl": Config.main_bot_url,
+        # "failUrl": Config.main_bot_url,
+        # "cbUrl": Config.notification_url,
+        "properties": [
+            {
+                "name": "ЛИЦЕВОЙ_СЧЕТ",
+                "value": 12987492
+            },
+            {
+                "name": "ИДЕНТИФИКАТОР",
+                "value": 101
+            }
+        ]
+    })
+    async with httpx.AsyncClient() as client:
+
+        reg_response = await client.request(method="POST",
+                                            url=url,
+                                            headers=headers,
+                                            data=payload,
+                                            timeout=None)
+
+        if reg_response.status_code == 200:
+            data_rec_pay = reg_response.json()
+            return data_rec_pay
+
+        else:
+            raise ConfirmPaymentError
+
 if __name__ == "__main__":
-    data = asyncio.run(registr_user(phone_number="79999999999"))
+    data = asyncio.run(create_new_recurrent_payment_test(rate_name="testPay"))
     print(data)

@@ -10,12 +10,14 @@ import asyncio
 import aiofiles
 import aiofiles.os
 from concurrent.futures import ThreadPoolExecutor
-
 from typing import Dict, List
 import seaborn as sns
 
 
 class Statistics:
+    def __init__(self):
+        self.executor = ThreadPoolExecutor()
+
     async def __call__(self, user_id: int,
                        *args, **kwargs):
 
@@ -31,8 +33,7 @@ class Statistics:
 
         return await self.get_user_stats(user_data=user_data)
 
-    @staticmethod
-    async def get_stats_for_admin(users_data, out_path: str):
+    async def get_stats_for_admin(self, users_data, out_path: str):
         data = {
             "user_id": [],
             "rate": [],
@@ -61,12 +62,13 @@ class Statistics:
 
         async def save_plot(fig, filename):
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, fig.savefig, filename)
+            await loop.run_in_executor(self.executor, fig.savefig, filename)
             plt.close(fig)
 
         fig, ax = plt.subplots(figsize=(12, 6))
         sns.barplot(x="user_id", y="n_used_tokens", data=df, palette="Blues_d", ax=ax)
-        ax.set(xlabel='ID Пользователя', ylabel='Использованные Токены (Этот Месяц)', title='Ежемесячное Использование Токенов Пользователями')
+        ax.set(xlabel='ID Пользователя', ylabel='Использованные Токены (Этот Месяц)',
+               title='Ежемесячное Использование Токенов Пользователями')
         plt.xticks(rotation=45)
         plt.tight_layout()
         token_usage_path = os.path.join(out_path, 'token_usage.png')
@@ -74,7 +76,8 @@ class Statistics:
 
         fig, ax = plt.subplots(figsize=(12, 6))
         sns.barplot(x="user_id", y="n_transcribed_seconds", data=df, palette="Greens_d", ax=ax)
-        ax.set(xlabel='ID Пользователя', ylabel='Секунды на Расшифровку (Этот Месяц)', title='Ежемесячное Использование Секунд на Расшифровку Пользователями')
+        ax.set(xlabel='ID Пользователя', ylabel='Секунды на Расшифровку (Этот Месяц)',
+               title='Ежемесячное Использование Секунд на Расшифровку Пользователями')
         plt.xticks(rotation=45)
         plt.tight_layout()
         transcribed_seconds_path = os.path.join(out_path, 'transcribed_seconds_usage.png')
@@ -82,7 +85,8 @@ class Statistics:
 
         fig, ax = plt.subplots(figsize=(12, 6))
         sns.barplot(x="user_id", y="n_generate_seconds", data=df, palette="Reds_d", ax=ax)
-        ax.set(xlabel='ID Пользователя', ylabel='Секунды на Генерацию (Этот Месяц)', title='Ежемесячное Использование Секунд на Генерацию Пользователями')
+        ax.set(xlabel='ID Пользователя', ylabel='Секунды на Генерацию (Этот Месяц)',
+               title='Ежемесячное Использование Секунд на Генерацию Пользователями')
         plt.xticks(rotation=45)
         plt.tight_layout()
         generate_seconds_path = os.path.join(out_path, 'generate_seconds_usage.png')
@@ -91,7 +95,8 @@ class Statistics:
         fig, ax = plt.subplots(figsize=(12, 6))
         rate_counts = df["rate"].value_counts()
         sns.barplot(x=rate_counts.index, y=rate_counts.values, palette="Purples_d", ax=ax)
-        ax.set(xlabel='Тип Подписки', ylabel='Количество Пользователей', title='Количество Пользователей по Типу Подписки')
+        ax.set(xlabel='Тип Подписки', ylabel='Количество Пользователей',
+               title='Количество Пользователей по Типу Подписки')
         plt.xticks(rotation=0)
         plt.tight_layout()
         subscription_rate_path = os.path.join(out_path, 'subscription_rate.png')
@@ -121,29 +126,28 @@ class Statistics:
         total_cost_all = total_cost_tokens_all + total_cost_transcribe_all + total_cost_transcribe_all
 
         text_stats = (
-            f"Общая статистика использования сервиса:\n\n"
-            f"Всего пользователей: {total_users}\n"
-            f"Пользователей с бесплатной подпиской: {free_users}\n"
-            f"Пользователей с премиум подпиской: {premium_users}\n\n"
-            
-            f"Общее количество использованных токенов за месяц: {total_tokens_used}\n"
-            f"Затраты на токены в месяц: ${total_cost_tokens:.2f}\n"
-            f"Общее количество использованных токенов за все время: {total_tokens_used_all}\n"
-            f"Затраты на токены за все время: ${total_cost_tokens_all:.2f}\n\n"
-            
-            f"Общее количество секунд на расшифровку за месяц: {total_transcribed_seconds:.2f}\n"
-            f"Затраты на расшифровку в месяц: ${total_cost_transcribe:.2f}\n"
-            f"Общее количество секунд на расшифровку за все время: {total_transcribed_seconds_all:.2f}\n"
-            f"Затраты на расшифровку за все время: ${total_cost_transcribe_all:.2f}\n\n"
-            
-            f"Общее количество секунд на генерацию за месяц: {total_generate_seconds:.2f}\n"
-            f"Затраты на генерацию в месяц: ${total_cost_generate:.2f}\n"
-            f"Общее количество секунд на генерацию за все время: {total_generate_seconds_all:.2f}\n"
-            f"Затраты на генерацию за все время: ${total_cost_generate_all:.2f}\n\n"
+            f"<b>📊 Общая статистика использования сервиса:</b>\n\n"
+            f"<b>👥 Всего пользователей:</b> <code>{total_users}</code>\n"
+            f"<b>🆓 Пользователей с бесплатной подпиской:</b> <code>{free_users}</code>\n"
+            f"<b>💎 Пользователей с премиум подпиской:</b> <code>{premium_users}</code>\n\n"
 
-            f"Общие затраты за месяц: ${total_cost:.2f}\n"
-            f"Общие затраты за все время: ${total_cost_all:.2f}\n",
+            f"<b>💬 Общее количество использованных токенов за месяц:</b> <code>{total_tokens_used}</code>\n"
+            f"<b>💰 Затраты на токены в месяц:</b> <code>${total_cost_tokens:.2f}</code>\n"
+            f"<b>💬 Общее количество использованных токенов за все время:</b> <code>{total_tokens_used_all}</code>\n"
+            f"<b>💰 Затраты на токены за все время:</b> <code>${total_cost_tokens_all:.2f}</code>\n\n"
 
+            f"<b>🎙 Общее количество секунд на расшифровку за месяц:</b> <code>{total_transcribed_seconds:.2f}</code>\n"
+            f"<b>💰 Затраты на расшифровку в месяц:</b> <code>${total_cost_transcribe:.2f}</code>\n"
+            f"<b>🎙 Общее количество секунд на расшифровку за все время:</b> <code>{total_transcribed_seconds_all:.2f}</code>\n"
+            f"<b>💰 Затраты на расшифровку за все время:</b> <code>${total_cost_transcribe_all:.2f}</code>\n\n"
+
+            f"<b>🗣 Общее количество секунд на генерацию за месяц:</b> <code>{total_generate_seconds:.2f}</code>\n"
+            f"<b>💰 Затраты на генерацию в месяц:</b> <code>${total_cost_generate:.2f}</code>\n"
+            f"<b>🗣 Общее количество секунд на генерацию за все время:</b> <code>{total_generate_seconds_all:.2f}</code>\n"
+            f"<b>💰 Затраты на генерацию за все время:</b> <code>${total_cost_generate_all:.2f}</code>\n\n"
+
+            f"<b>💰 Общие затраты за месяц:</b> <code>${total_cost:.2f}</code>\n"
+            f"<b>💰 Общие затраты за все время:</b> <code>${total_cost_all:.2f}</code>"
         )
 
         return {
@@ -158,15 +162,15 @@ class Statistics:
     @staticmethod
     async def get_user_stats(user_data) -> str:
         data_stats = (
-            f"Статистика пользователя {user_data['username']}:\n\n"
-            f"ID Пользователя: {user_data['_id']}\n"
-            f"Дата первого взаимодействия: {user_data['first_seen']}\n"
-            f"Дата последнего взаимодействия: {user_data['last_interaction']}\n\n"
-            f"Текущая модель: {user_data['current_model']}\n"
-            f"Использовано токенов (входящих): {user_data['n_used_tokens']['n_input_tokens']}\n"
-            f"Использовано токенов (исходящих): {user_data['n_used_tokens']['n_output_tokens']}\n\n"
-            f"Количество секунд на расшифровку: {user_data['n_transcribed_seconds']}\n"
-            f"Количество секунд на генерацию: {user_data['n_generate_seconds']}\n"
-            f"Текущая подписка: {user_data['rate']}\n"
+            f"📊 <b>Статистика пользователя</b> <code>{user_data['username']}</code>:\n\n"
+            f"👤 <b>ID Пользователя:</b> <code>{user_data['_id']}</code>\n"
+            f"📅 <b>Дата первого взаимодействия:</b> <code>{user_data['first_seen']}</code>\n"
+            f"⏳ <b>Дата последнего взаимодействия:</b> <code>{user_data['last_interaction']}</code>\n\n"
+            f"🤖 <b>Текущая модель:</b> <code>{user_data['current_model']}</code>\n"
+            f"💬 <b>Использовано токенов (входящих):</b> <code>{user_data['n_used_tokens']['n_input_tokens']}</code>\n"
+            f"💬 <b>Использовано токенов (исходящих):</b> <code>{user_data['n_used_tokens']['n_output_tokens']}</code>\n\n"
+            f"🎙 <b>Количество секунд на расшифровку:</b> <code>{user_data['n_transcribed_seconds']}</code>\n"
+            f"🗣 <b>Количество секунд на генерацию:</b> <code>{user_data['n_generate_seconds']}</code>\n"
+            f"💰 <b>Текущая подписка:</b> <code>{user_data['rate']}</code>\n"
         )
         return data_stats

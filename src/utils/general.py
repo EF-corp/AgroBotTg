@@ -12,12 +12,15 @@ from aiogram.types import Message, CallbackQuery
 
 
 async def get_rate_data(rate_data):
-    data = f"Тариф: {rate_data['_id']}\n\
-             Количество токенов: {rate_data['n_tokens']}\n\
-             Количество секунд на транскрипцию: {rate_data['n_transcribed_seconds']}\n\
-             Количество секунд на генерацию: {rate_data['n_generated_seconds']}\n\
-             Цена: {rate_data['price']}\n\
-             Тип оплаты: {rate_data['type']}"
+    data = (
+        f"💰 <b>Тариф:</b> <code>{rate_data['_id']}</code>\n"
+        f"💬 <b>Количество токенов:</b> <code>{rate_data['n_tokens']}</code>\n"
+        f"🎙️ <b>Количество секунд на транскрипцию:</b> <code>{rate_data['n_transcribed_seconds']}</code>\n"
+        f"🗣️ <b>Количество секунд на генерацию:</b> <code>{rate_data['n_generated_seconds']}</code>\n"
+        f"💲 <b>Цена:</b> <code>{rate_data['price']}</code>\n"
+        f"💳 <b>Тип оплаты:</b> <code>{rate_data['type']}</code>"
+    )
+
     return data
 
 

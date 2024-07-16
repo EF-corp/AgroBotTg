@@ -2,12 +2,13 @@ import os
 import json
 from dotenv import load_dotenv
 
+
 class config:
 
     def __init__(self, config_file: str = None):
 
-        load_dotenv()  
-        
+        load_dotenv()
+
         self.config_file = os.path.expanduser(config_file) if config_file else os.getenv('CONFIG_FILE')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         self.serp_api_key = os.getenv("SERP_API_KEY")
@@ -48,6 +49,7 @@ class config:
         self.TRANSCRIBE_SECOND_COST = float(os.getenv("TRANSCRIBE_SECOND_COST", 0.0001))
         self.GENERATE_SECOND_COST = float(os.getenv("GENERATE_SECOND_COST", 0.000015))
         self.admins_ids = list(map(int, os.getenv("ADMINS_IDS", "5484401110").split(',')))
+
     # def validate_doc_path(self):
     #     os.makedirs(self.doc_path, exist_ok=True)
 

@@ -1,28 +1,33 @@
 from src.config import Config
-import openai
 from src.database import DataBase as db
+import openai
 import io
 import logging
 import httpx
 from moviepy.editor import VideoFileClip
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
-import base64
 import aiofiles
-from pydub import AudioSegment
+import aiofiles.os
 from typing import List
-import json
 import os
 from pytube import YouTube, Playlist
-import ffmpeg
 import uuid
+from bs4 import BeautifulSoup
+import re
+import aiohttp
 
 
 class KnowledgeLoader:
 
     def __init__(self):
-        self.http_client_ = httpx.AsyncClient(proxies=Config.proxies)
-        self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key, http_client=self.http_client_)
+        proxy = Config.proxies
+        if proxy is not None:
+            self.http_client_openai = httpx.AsyncClient(proxies=proxy)
+            self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key, http_client=self.http_client_openai)
+        else:
+            self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key)
+
         self.executor_pool = ThreadPoolExecutor()
         self.http_client = httpx.AsyncClient()
 
@@ -30,50 +35,49 @@ class KnowledgeLoader:
 
         try:
             # with open(file, "rb") as audio:
+            file.seek(0)  # Reset the file pointer to the beginning
+            file.name = "temp.mp3"
+            audio_content = file.read()
             prompt_text = Config.whisper_prompt
             result = await self.client.audio.transcriptions.create(model="whisper-1",
-                                                                   file=file.read(),
+                                                                   file=("temp." + "mp3", audio_content, "audio/mp3"),
                                                                    prompt=prompt_text)
+            # print(result.text)
             return result.text
 
         except Exception as e:
             logging.exception(e)
             raise Exception(f"⚠️ _'error'._ ⚠️\n{str(e)}") from e
 
-    @staticmethod
-    async def _get_audio_from_video(video_data: str) -> io.BytesIO:
+    async def _get_audio_from_video(self, video_data: str) -> io.BytesIO:
         try:
             # Create a BytesIO object to hold the audio data
-            audio_data = io.BytesIO()
+            # audio_data = io.BytesIO()
+            async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
+                name = temp_audio.name
 
-            # Load the video clip
-            # clip = VideoFileClip(video_data)
-            # video_temp_path = "temp_video.mp4"
-            # clip.write_videofile(video_temp_path, codec="libx264")
+            def _get_audio(path_video):
+                clip = VideoFileClip(path_video)
+                clip.audio.write_audiofile(name, codec="mp3", bitrate="32k")
+                clip.audio.close()
+                clip.close()
 
-            # Use ffmpeg to extract audio and write to BytesIO object
-            process = (
-                ffmpeg
-                .input(video_data)
-                .output('pipe:', format='mp3', acodec='libmp3lame', audio_bitrate='32k')
-                .run_async(pipe_stdout=True, pipe_stderr=True)
-            )
+                with open(name, "rb") as audio_tfile:
+                    audio_data = io.BytesIO(audio_tfile.read())
+                    audio_data.seek(0)
 
-            # Read the output from the process and write it to the BytesIO object
-            audio_data.write(process.stdout.read())
-            audio_data.seek(0)
+                return audio_data
+                # _data.seek(0)
 
-            # Clean up
-            process.stdout.close()
-            process.wait()
-            clip.close()
+            audio_data = await asyncio.get_event_loop().run_in_executor(self.executor_pool, _get_audio, video_data)
+            await aiofiles.os.remove(video_data)
+            await aiofiles.os.remove(name)
+
+            return audio_data
 
         except Exception as e:
             logging.exception(e)
             raise Exception(f"⚠️ _'error'._ ⚠️\n{str(e)}") from e
-
-        else:
-            return audio_data
 
     async def download_video(self, url, output_path="videos"):
 
@@ -97,16 +101,19 @@ class KnowledgeLoader:
 
         file_path = await self.download_video(url, output_path)
 
-        # async with aiofiles.open(file_path, "rb") as f:
-        #     video = io.BytesIO(await f.read())
-        #     video.name = "youtube.mp4"
-        #     video.seek(0)
-
         audio = await self._get_audio_from_video(file_path)
-        transcription = await self.transcribe(audio)
-        transcription = io.BytesIO(transcription.encode("utf-8")).read()
 
-        return transcription
+        transcription = await self.transcribe(audio)
+
+        transcription = io.BytesIO(transcription.encode("utf-8"))
+        fname = f'{file_path.split("/")[-1].split(".")[0]}.txt'  # f"agronomical_video_{str(uuid.uuid4())}.txt"
+        async with aiofiles.open(fname, "wb") as f:
+            await f.write(transcription.getbuffer())
+
+        data = open(fname, "rb")
+        data.close()
+        await aiofiles.os.remove(fname)
+        return data  # await aiofiles.open(fname, "rb")
 
     async def process_playlist(self, playlist_url, output_path="videos"):
         file_paths = await self.download_playlist(playlist_url, output_path)
@@ -118,14 +125,15 @@ class KnowledgeLoader:
                                      vectorstore_name: str = f"agro_store_{str(uuid.uuid4())}"):
 
         try:
-            vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
 
+            transcriptions = []
             if "playlist" in url_youtube:
                 transcriptions = await self.process_playlist(url_youtube, output_path)
             else:
                 transcription = await self.process_video(url_youtube, output_path)
                 transcriptions = [transcription]
 
+            vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
             batch = await self.client.beta.vector_stores.file_batches.upload_and_poll(
                 vector_store_id=vector_store.id,
                 files=transcriptions
@@ -144,16 +152,20 @@ class KnowledgeLoader:
                                   vectorstore_name: str = f"agro_store_{str(uuid.uuid4())}"):
         try:
 
+            if name_of_file is None:
+                name_of_file = f"text_data_{str(uuid.uuid4())}.txt"
+
+            async with aiofiles.open(name_of_file, "wb") as f:
+                await f.write(file_data.getbuffer())
+
             vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
-
-            if name_of_file is not None:
-                file_data.name = name_of_file
-
+            data = open(name_of_file, "rb")
             batch = await self.client.beta.vector_stores.file_batches.upload_and_poll(
                 vector_store_id=vector_store.id,
-                files=[file_data.read()]
+                files=[data]
             )
-
+            data.close()
+            await aiofiles.os.remove(name_of_file)
             await db.add_new_vs(vector_store.id)
 
         except Exception as e:
@@ -163,50 +175,79 @@ class KnowledgeLoader:
             return vector_store.id
 
     async def download_file_gdrive(self, url):
-        async with self.http_client as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            # await client.aclose()
-            return io.BytesIO(response.content)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+
+                if 'Content-Disposition' in response.headers:
+                    content_disposition = response.headers['Content-Disposition']
+                    fname = re.findall('filename=(.+)', content_disposition)[0].replace('"', '')
+
+                else:
+                    logging.warning("Content-Disposition header not found. Cannot determine filename.")
+                    fname = f"unnamed_gdrive_data_{str(uuid.uuid4())}.txt"
+                r_content = await response.read()
+                buf = io.BytesIO(r_content)
+                async with aiofiles.open(fname, "wb") as f:
+                    await f.write(buf.getbuffer())
+
+            data = open(fname, "rb")
+            data.close()
+            await aiofiles.os.remove(fname)
+            return data
 
     async def gather_files_from_gfolder(self, folder_url):
         async with self.http_client as client:
-            response = await client.get(folder_url)
+            response = await client.get(folder_url, )
             response.raise_for_status()
-            urls = response.json().get("file_urls", [])
-            # await client.aclose()
-            return urls
+
+            ids = []
+
+            def _get_ids(page):
+                nonlocal ids
+                soup = BeautifulSoup(page, 'html.parser')
+                file_links = soup.find_all("div", class_="WYuW0e Ss7qXc")
+                ids = [u['data-id'] for u in file_links]
+
+            loop = asyncio.get_event_loop()
+            content = response.read()
+            text = content.decode("utf-8")
+            await loop.run_in_executor(self.executor_pool, _get_ids, text)
+
+            return await self.process_gurl(file_ids=ids)
+
+    @staticmethod
+    async def process_gurl(gdrive_url: str | None = None, file_ids: List[str] | None = None):
+        base_url = "https://drive.google.com/uc?export=download&id="
+        if gdrive_url is not None:
+            return f"{base_url}{gdrive_url.split('/')[-2]}"
+        if file_ids is not None:
+            return [f"{base_url}{id}" for id in file_ids]
 
     async def load_knowledge_gdrive(self, gdrive_url: str,
                                     vectorstore_name: str = f"agro_store_{str(uuid.uuid4())}"):
         try:
-            vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
+
 
             if "drive.google.com" in gdrive_url:
                 if "folder" in gdrive_url:
                     file_urls = await self.gather_files_from_gfolder(gdrive_url)
                 else:
-                    url = f"https://drive.google.com/uc?export=download&id={gdrive_url.split('/')[-2]}"
+                    url = await self.process_gurl(gdrive_url)
                     file_urls = [url]
 
             elif "docs.google.com" in gdrive_url:
                 if "folder" in gdrive_url:
                     file_urls = await self.gather_files_from_gfolder(gdrive_url)
                 else:
-                    url = f"https://drive.google.com/uc?export=download&id={gdrive_url.split('/')[-2]}"
+                    url = await self.process_gurl(gdrive_url)
                     file_urls = [url]
 
             else:
                 raise ValueError("⚠️Need only google drive links!")
 
-            contents: list = []
+            contents = [await self.download_file_gdrive(url) for url in file_urls]
 
-            async with self.http_client as client:
-                for url in file_urls:
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    content = io.BytesIO(response.content)
-                    contents.append(content)
+            vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
 
             batch = await self.client.beta.vector_stores.file_batches.upload_and_poll(
                 vector_store_id=vector_store.id,
@@ -222,27 +263,30 @@ class KnowledgeLoader:
         else:
             return vector_store.id
 
-    async def load_partner(self, url: str,
+    async def load_partner(self, gdrive_url: str,
                            vectorstore_name: str = f"partner_store_{str(uuid.uuid4())}"):
         try:
-            vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
 
-            if "drive.google.com" in url:
-                if "folder" in url:
-                    file_urls = await self.gather_files_from_gfolder(url)
+            if "drive.google.com" in gdrive_url:
+                if "folder" in gdrive_url:
+                    file_urls = await self.gather_files_from_gfolder(gdrive_url)
                 else:
-                    url = f"https://drive.google.com/uc?export=download&id={url.split('/')[-2]}"
+                    url = await self.process_gurl(gdrive_url)
+                    file_urls = [url]
+
+            elif "docs.google.com" in gdrive_url:
+                if "folder" in gdrive_url:
+                    file_urls = await self.gather_files_from_gfolder(gdrive_url)
+                else:
+                    url = await self.process_gurl(gdrive_url)
                     file_urls = [url]
 
             else:
                 raise ValueError("⚠️Need only google drive links!")
 
-            contents: list = []
+            contents = [await self.download_file_gdrive(url) for url in file_urls]
 
-            for _url in file_urls:
-                content = await self.download_file_gdrive(url=_url)
-                contents.append(content)
-
+            vector_store = await self.client.beta.vector_stores.create(name=vectorstore_name)
             batch = await self.client.beta.vector_stores.file_batches.upload_and_poll(
                 vector_store_id=vector_store.id,
                 files=contents

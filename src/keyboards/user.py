@@ -37,13 +37,13 @@ def get_user_menu_kb():
     return menu
 
 
-def get_user_sub_menu(rates, page=0, page_size=Config.n_rate_per_page, from_menu=False):
+def get_user_sub_menu(rates, user_rate, page=0, page_size=Config.n_rate_per_page, from_menu=False):
     markup = InlineKeyboardBuilder()
     start = page * page_size
     end = start + page_size
 
     for rate in rates[start:end]:
-        markup.row(InlineKeyboardButton(text=rate["_id"],
+        markup.row(InlineKeyboardButton(text=rate["_id"] if rate["_id"] != user_rate else f"✅  {rate['_id']}",
                                         callback_data=f"buy_rate_{rate['_id']}"))
 
     if len(rates) > page_size:

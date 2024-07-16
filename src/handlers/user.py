@@ -28,9 +28,12 @@ from src.web_callback.payment.accept_payment import accept_new_rec_pay
 
 from datetime import datetime
 import asyncio
+import aiofiles
+import aiofiles.os
 import io
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+import logging
 
 user = Router()
 
@@ -95,7 +98,7 @@ async def offer_user_handler(message: Message | CallbackQuery):
 
     await message.bot.send_document(chat_id=user_id,
                                     document=document,
-                                    caption="Договор Оферты")
+                                    caption="📄 Договор Оферты")
 
 
 @user.message(UserCheck(), Command("menu"))
@@ -243,7 +246,8 @@ async def user_sub_handle(message: Message | CallbackQuery):
             text=RATE_TEXT,
             parse_mode="HTML",
             reply_markup=get_user_sub_menu(rates=rates,
-                                           from_menu=True).as_markup()
+                                           from_menu=True,
+                                           user_rate=await db.get_user_attribute(user_id, "rate")).as_markup()
         )
 
     else:
@@ -254,7 +258,8 @@ async def user_sub_handle(message: Message | CallbackQuery):
             message_id=message.message.message_id,
             parse_mode="HTML",
             reply_markup=get_user_sub_menu(rates=rates,
-                                           from_menu=True).as_markup()
+                                           from_menu=True,
+                                           user_rate=await db.get_user_attribute(user_id, "rate")).as_markup()
         )
 
 
@@ -262,7 +267,7 @@ async def user_sub_handle(message: Message | CallbackQuery):
 async def rate_prev_page_handler(callback: CallbackQuery):
     await callback.answer('')
     page = int(callback.data.split("_")[2])
-
+    user_id = callback.from_user.id
     rates = await db.get_all_rates()
     page -= 1
     if page < 0:
@@ -274,7 +279,8 @@ async def rate_prev_page_handler(callback: CallbackQuery):
                                          parse_mode="HTML",
                                          reply_markup=get_user_sub_menu(rates=rates,
                                                                         page=page,
-                                                                        from_menu=True).as_markup()
+                                                                        from_menu=True,
+                                                                        user_rate=await db.get_user_attribute(user_id, "rate")).as_markup()
                                          )
 
 
@@ -282,7 +288,7 @@ async def rate_prev_page_handler(callback: CallbackQuery):
 async def rate_next_page_handler(callback: CallbackQuery):
     await callback.answer('')
     page = int(callback.data.split("_")[2])
-
+    user_id = callback.from_user.id
     rates = await db.get_all_rates()
     page += 1
     if page >= len(rates) / Config.n_rate_per_page:
@@ -294,34 +300,46 @@ async def rate_next_page_handler(callback: CallbackQuery):
                                          parse_mode="HTML",
                                          reply_markup=get_user_sub_menu(rates=rates,
                                                                         page=page,
-                                                                        from_menu=True).as_markup()
+                                                                        from_menu=True,
+                                                                        user_rate=await db.get_user_attribute(user_id, "rate")).as_markup()
                                          )
 
 
 @user.callback_query(UserCheck(), F.data.startswith("buying_rate_"))
 async def user_buying_rate_handle(callback: CallbackQuery, state: FSMContext):
+    # await register_user(message=callback.message, user_semaphores=user_semaphores)
     await callback.answer('')
 
     user_id = callback.from_user.id
-    rate = callback.data[2]
+    rate = callback.data.split("_")[2]
+    # print(rate)
 
     if await db.get_user_attribute(user_id, "phone") is None:
         await state.set_state(UserPhone.waiting_for_user_phone)
         await state.update_data(rate=rate)
-        await callback.message.answer(text="Введите свой номер телефона:")
+        await callback.message.answer(text="<b>Введите свой номер телефона:</b>",
+                                      parse_mode="HTML")
         return
     try:
+
         await accept_new_rec_pay(message=callback.message,
-                                 rate_name=rate)
-    except:
-        await callback.message.answer(text="Что-то пошло не так при обработке оплаты, "
-                                           "попробуйте заново, или обратитесь в тех. поддержку ниже:",
+                                 rate_name=rate,
+                                 user_id=user_id)
+    except Exception as e:
+        await callback.message.answer(text="❌ Что-то пошло не так при обработке оплаты, "
+                                           f"попробуйте заново, или обратитесь в тех. поддержку ниже:\n\n{str(e)}",
                                       reply_markup=get_help_keyboard())
+
+    else:
+
+        await callback.message.answer(text="✅ Тариф успешно подключён!")
 
 
 @user.message(UserCheck(), UserPhone.waiting_for_user_phone)
 async def get_user_phone(message: Message, state: FSMContext):
     try:
+        await register_user(message=message, user_semaphores=user_semaphores)
+
         phone = message.text
         user_id = message.from_user.id
         if await is_phone(phone):
@@ -331,7 +349,8 @@ async def get_user_phone(message: Message, state: FSMContext):
             raise
 
     except:
-        await message.answer(text="Введите корректный номер телефона для регистрации")
+        await message.answer(text="<b>Введите корректный номер телефона для регистрации!</b>",
+                             parse_mode="HTML")
 
     else:
         state_data = await state.get_data()
@@ -340,10 +359,11 @@ async def get_user_phone(message: Message, state: FSMContext):
 
         try:
             await accept_new_rec_pay(message=message,
-                                     rate_name=rate)
-        except:
-            await message.answer(text="Что-то пошло не так при обработке оплаты, попробуйте заново, или "
-                                      "обратитесь в тех. поддержку ниже:",
+                                     rate_name=rate,
+                                     user_id=user_id)
+        except Exception as e:
+            await message.answer(text="❌ Что-то пошло не так при обработке оплаты, попробуйте заново, или "
+                                      f"обратитесь в тех. поддержку ниже:\n\n{str(e)}",
                                  reply_markup=get_help_keyboard())
 
 
@@ -363,7 +383,7 @@ async def user_cancel_rate_handle(callback: CallbackQuery):
 
     await callback.bot.send_message(
         chat_id=user_id,
-        text="Ваш тарифный план успешно отменён!"
+        text="✅ Ваш тарифный план успешно отменён!"
     )
 
     await db.update_user(user_id=user_id)
@@ -422,12 +442,12 @@ async def _voice_user(message: Message):
     try:
         transcribed_text = openai_helper.transcribe(buf)
     except:
-        await message.answer("❌  Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
-                                            обработке голоса!\nПопробуйте снова или обратитесь в тех. поддержку:",
+        await message.answer("❌ Хьюстон, у нас проблемы!\nЧто-то пошло не так при "
+                             "обработке голоса!\nПопробуйте снова или обратитесь в тех. поддержку:",
                              reply_markup=get_help_keyboard(),
                              parse_mode="HTML")
     else:
-        text = f"🎤: <i>{transcribed_text}</i>"
+        text = f"🎤: <code>{transcribed_text}</code>"
         await message.answer(text=text,
                              parse_mode="HTML")
 
@@ -537,15 +557,15 @@ async def _photo_analyze_user(message: Message):
     photo_file = await message.bot.get_file(photo.file_id)
     photo_path = photo_file.file_path
 
-    buf = io.BytesIO()
+    async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix="." + photo_path.split(".")[-1]) as temp_photo:
+        name = temp_photo.name
+
     await message.bot.download_file(file_path=photo_path,
-                                    destination=buf)
-    buf.name = "photo.jpg"
-    buf.seek(0)
+                                    destination=name)
 
     # message handle
     await _message_handle_user(message=message,
-                               image=buf)
+                               image=name)
 
 
 async def _message_handle_user(message: Message,
@@ -557,8 +577,10 @@ async def _message_handle_user(message: Message,
 
         user_id = message.from_user.id
         current_model = await db.get_user_attribute(user_id, "current_model")
+
         if use_new_dialog_timeout:
-            if (datetime.now() - await db.get_user_attribute(user_id, "last_interaction")).seconds > \
+            last_message = await db.get_dialog_last(user_id=user_id)
+            if (datetime.now() - last_message).seconds > \
                     Config.new_dialog_timeout and len(await db.get_dialog_messages(user_id=user_id)) > 0:
                 await db.start_new_dialog(user_id)
 
@@ -567,8 +589,12 @@ async def _message_handle_user(message: Message,
 
         await db.update_user(user_id=user_id)
 
-        message_text = "" or message.text
-        if message_text == "" and image is None and video is None and context is None:
+        message_text = message.text
+
+        if not message_text and (image or video or context):
+            message_text = message.caption
+
+        if not message_text and not image and not video and not context:
             await message.answer("🥲 Вы отправили <b>пустое сообщение</b>. Попробуйте снова!",
                                  parse_mode="HTML")
             return
@@ -576,7 +602,9 @@ async def _message_handle_user(message: Message,
         dialog_messages = await db.get_dialog_messages(user_id, dialog_id=None)
 
         if context is not None:
-            message_text = f"Контекст: {context}\nПользователь: {message_text}"
+            message_text = f"Пользователь загрузил файл на анализ, ты должен проанализировать " \
+                           f"содержимое файла и дать ответ на вопрос пользователя\nДанные из файла: {context}\n" \
+                           f"Пользователь: {message_text}"
 
         placeholder_message = await message.answer("⏳ Подождите, пока нейросеть обработает ваш запрос...",
                                                    parse_mode="HTML")
@@ -596,9 +624,9 @@ async def _message_handle_user(message: Message,
         raise
 
     except Exception as e:
-
-        await message.answer("❌  Хьюстон, у нас проблемы!\nЧто-то пошло не так при \
-                            обработке запроса!\nПопробуйте снова или обратитесь в тех. поддержку:",
+        logging.exception(e)
+        await message.answer("❌  Хьюстон, у нас проблемы!\nЧто-то пошло не так при "
+                             "обработке запроса!\nПопробуйте снова или обратитесь в тех. поддержку:",
                              reply_markup=get_help_keyboard(),
                              parse_mode="HTML")
     else:
@@ -615,7 +643,7 @@ async def _message_handle_user(message: Message,
                     text=f"💬 Текстовый ответ: \n{answer}",
                     chat_id=user_id,
                     message_id=placeholder_message.message_id,
-                    parse_mode="MARKDOWN",
+                    parse_mode="HTML",
                     reply_markup=get_feed_kb(user_id=user_id,
                                              dialog_id=await db.get_user_attribute(user_id=user_id,
                                                                                    key="current_dialog_id")))
@@ -640,7 +668,7 @@ async def _message_handle_user(message: Message,
                 text=answer,
                 chat_id=user_id,
                 message_id=placeholder_message.message_id,
-                parse_mode="MARKDOWN",
+                parse_mode="HTML",
                 reply_markup=get_feed_kb(user_id=user_id,
                                          dialog_id=await db.get_user_attribute(user_id=user_id,
                                                                                key="current_dialog_id")))
@@ -650,26 +678,35 @@ async def _message_handle_user(message: Message,
                               "bot": answer,
                               "date": datetime.now(),
                               "feed": None}
+        dialog_messages = await db.get_dialog_messages(user_id, dialog_id=None)
+
+        dialog_messages = dialog_messages[n_first_dialog_messages_removed:] + [new_dialog_message]
 
         await db.set_dialog_messages(
             user_id=user_id,
-            dialog_messages=await db.get_dialog_messages(user_id,
-                                                         dialog_id=None)[n_first_dialog_messages_removed:].append(
-                new_dialog_message),
+            dialog_messages=dialog_messages,
             dialog_id=None
         )
         await db.update_spend(user_id=user_id,
                               n_used_tokens=n_input_tokens + n_output_tokens)
+
+        old_spend_token = await db.get_user_attribute(user_id, "n_used_tokens")
+        old_spend_token["n_input_tokens"] += n_input_tokens
+        old_spend_token["n_output_tokens"] += n_output_tokens
+
+        await db.set_user_attribute(user_id, "n_used_tokens", old_spend_token)
+
         # await db.update_n_used_tokens(user_id, current_model, n_input_tokens, n_output_tokens)
 
         if n_first_dialog_messages_removed > 0:
             if n_first_dialog_messages_removed == 1:
-                text = "📝️ <i>Уведомление:</i> Ваш текущий диалог слишком большой, ваше <b>первое сообщение</b> \
-                было удалено из контекста.\n Отправьте команду /new чтобы создать новый диалог."
+                text = "📝️ <i>Уведомление:</i> Ваш текущий диалог слишком большой, ваше <b>первое сообщение</b> " \
+                       "было удалено из контекста.\n Отправьте команду /new чтобы создать новый диалог."
             else:
-                text = f"📝️ <i>Уведомление:</i> Ваш текущий диалог \
-                слишком большой, ваши <b>{n_first_dialog_messages_removed} \
-                первые сообщения</b> были удалены из контекста.\n Отправьте команду /new чтобы создать новый диалог."
+                text = f"📝️ <i>Уведомление:</i> Ваш текущий диалог " \
+                       f"слишком большой, ваши <b>{n_first_dialog_messages_removed} " \
+                       f"первые сообщения</b> были удалены из контекста.\n " \
+                       f"Отправьте команду /new чтобы создать новый диалог."
             await message.answer(text, parse_mode="HTML")
 
 

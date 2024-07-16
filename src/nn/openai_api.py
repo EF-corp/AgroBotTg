@@ -13,28 +13,27 @@ import asyncio
 import base64
 import aiofiles
 import aiofiles.os
-from pydub import AudioSegment
-from typing import List
+from typing import List, Optional
 import json
-
-GPT_3_MODELS = ("gpt-3.5-turbo", "gpt-3.5-turbo-0301", "gpt-3.5-turbo-0613")
-GPT_3_16K_MODELS = ("gpt-3.5-turbo-16k", "gpt-3.5-turbo-16k-0613", "gpt-3.5-turbo-1106", "gpt-3.5-turbo-0125")
-GPT_4_MODELS = ("gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-turbo-preview")
-GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
-GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
-GPT_4_128K_MODELS = (
-    "gpt-4-1106-preview", "gpt-4-0125-preview", "gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
-GPT_4O_MODELS = ("gpt-4o",)
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + \
-                 GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS
+from tinytag import TinyTag
 
 
 class OpenAIHelper:
     def __init__(self) -> None:
-        self.http_client = httpx.AsyncClient(proxies=Config.proxies)
-        self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key, http_client=self.http_client)
+        proxy = Config.proxies
+        if proxy is not None:
+            self.http_client = httpx.AsyncClient(proxies=proxy)
+            self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key, http_client=self.http_client)
+        else:
+            self.client = openai.AsyncOpenAI(api_key=Config.openai_api_key)
         self.executor_pool = ThreadPoolExecutor()
-        self.OPENAI_COMPLETION_OPTIONS = Config.OPENAI_CONFIG
+        self.OPENAI_COMPLETION_OPTIONS = {
+            'temperature': 0.55,
+            'top_p': 1,
+            'frequency_penalty': 0,
+            'presence_penalty': 0,
+            'request_timeout': 60.0
+        }
         self.assistant_id = Config.assistant_id
         self.assistant_partner = Config.assistant_partner_id
         self.serp_api_key = Config.serp_api_key
@@ -53,7 +52,7 @@ class OpenAIHelper:
                     "api_key": self.serp_api_key,
                     "num": 10
                 }
-                tasks.append(client.get("https://serpapi.com/search", params=params))
+                tasks.append(client.get("https://serpapi.com/search", params=params, timeout=None))
 
             responses = await asyncio.gather(*tasks)
 
@@ -64,8 +63,8 @@ class OpenAIHelper:
 
             return results
 
-    async def get_answer_web(self, queries: List[str]):
-        search_results_list = await self.search_google(queries)
+    async def get_answer_web(self, query: List[str]):
+        search_results_list = await self.search_google(query)
         context = ""
 
         for search_results in search_results_list:
@@ -75,8 +74,9 @@ class OpenAIHelper:
                 snippet = result.get('snippet')
                 context += f"Заголовок: {title}\nИнформация: {snippet}\nРесурс [URL]: {url}\n\n"
 
-        search_prompt = """Ты бот для ответа на вопросы при помощи поиска в интернете. \
-        Тебе дан контекст, а ты должен максимально подробно и точно ответить на вопрос пользователя и дать ссылку на товар или услугу."""
+        search_prompt = "Ты бот для ответа на вопросы при помощи поиска в интернете. " \
+                        "Тебе дан контекст, а ты должен максимально подробно и " \
+                        "точно ответить на вопрос пользователя и дать ссылку на товар или услугу."
 
         context = f"{search_prompt} Контекст: \n{context}"
         return context
@@ -85,8 +85,8 @@ class OpenAIHelper:
 
         try:
             response = await self.client.audio.speech.create(
-                model=Config.tts_model,
-                voice=Config.tts_voice,
+                model="tts-1",
+                voice="onyx",
                 input=text,
                 response_format='opus'
             )
@@ -100,12 +100,12 @@ class OpenAIHelper:
                 temp_file.seek(0)
                 temp_file_path = tmp.name
 
-            audio_segment = await asyncio.get_running_loop().run_in_executor(self.executor_pool, AudioSegment.from_file,
-                                                                             temp_file_path, "opus")
+            audio_segment = await asyncio.get_running_loop().run_in_executor(self.executor_pool, TinyTag.get,
+                                                                             temp_file_path)
 
-            audio_length_seconds = len(audio_segment) / 1000.0
+            audio_length_seconds = float(audio_segment.duration)
 
-            return temp_file, round(audio_length_seconds, 3)
+            return temp_file_path, round(audio_length_seconds, 1)
 
         except Exception as e:
             logging.exception(e)
@@ -115,10 +115,14 @@ class OpenAIHelper:
 
         try:
             # with open(file, "rb") as audio:
-            prompt_text = Config.whisper_prompt
+            file.seek(0)  # Reset the file pointer to the beginning
+            file.name = "temp.mp3"
+            audio_content = file.read()
+            prompt_text = ""
             result = await self.client.audio.transcriptions.create(model="whisper-1",
-                                                                   file=file.read(),
+                                                                   file=("temp." + "mp3", audio_content, "audio/mp3"),
                                                                    prompt=prompt_text)
+            # print(result.text)
             return result.text
 
         except Exception as e:
@@ -169,18 +173,19 @@ class OpenAIHelper:
 
     @staticmethod
     async def is_need_voice_message(message: str):
+
         message = [
             {
                 "role": "system",
-                "content": """Ты высокоскоростной ассистент, твоя задача определять, \
-                             подразумевает ли пользователь ответ голосом или нет.\n
-                             В результате своей работы ты должен возвращать 0 или 1 в \
-                             зависимости требуется или нет ответ голосом.\n
-                             Например на сообщений 'Как избавиться от клеща, ответь голосом' \
-                             ты должен вернуть '1', а на сообщение 'Как избавиться от клеща' верни '0'."""},
+                "content": """Ты высокоскоростной ассистент, твоя задача определять, 
+подразумевает ли пользователь ответ голосом или нет.\n
+В результате своей работы ты должен возвращать 0 или 1 в 
+зависимости требуется или нет ответ голосом.\n
+Например на сообщений 'Как избавиться от клеща, ответь голосом' 
+ты должен вернуть '1', а на сообщение 'Как избавиться от клеща' верни '0'."""},
             {
                 "role": "user",
-                "content": message
+                "content": message if message is not None else "Нет сообщения"
             }
         ]
         return message
@@ -190,7 +195,11 @@ class OpenAIHelper:
         while answer is None:
             try:
 
+                if message == "":
+                    return False
+
                 message = await self.is_need_voice_message(message)
+                print(message)
 
                 r = await self.client.chat.completions.create(
                     model=model,
@@ -280,53 +289,68 @@ class OpenAIHelper:
                             "text": f"Пользователь: {message}\nОтвечай в формате Markdown",
                         },
                         {
-                            "type": "image",
-                            "image": self._encode_image(image_buffer),
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{self._encode_image(image_buffer)}"
+                            }
                         }
                     ]
                 }
 
             )
         else:
-            messages.extend({"role": "user", "content": f"Пользователь: {message}\nОтвечай в формате Markdown"})
+            messages.extend({"role": "user", "content": f"Пользователь: {message}"})  # \nОтвечай в формате Markdown
 
         return messages
 
-    async def _generate_prompt_messages_assistant(self, message, dialog_messages=None,
-                                                  image_buffer: io.BytesIO = None,
-                                                  video_buffer: io.BytesIO = None):
+    async def _generate_prompt_messages_assistant(self, message,
+                                                  dialog_messages: Optional[list] = None,
+                                                  image_path: Optional[str] = None,
+                                                  video_buffer: Optional[io.BytesIO] = None):
 
         messages = []
         if dialog_messages is not None:
             for dialog_message in dialog_messages[3:]:
+                print(dialog_message["feed"])
                 if dialog_message["feed"] or dialog_message["feed"] is None:
                     messages.append({"role": "user", "content": dialog_message["user"]})
                     messages.append({"role": "assistant", "content": dialog_message["bot"]})
 
-        if image_buffer is not None:
+        if image_path is not None:
+            image_data = open(image_path, "rb")
+            image_file = await self.client.files.create(
+                file=image_data,
+                purpose="vision"
+            )
+
+            image_data.close()
+
+            await aiofiles.os.remove(image_path)
             messages.append(
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
-                            "text": message,
+                            "text": message if message is not None else "Нет сообщения",
                         },
                         {
-                            "type": "image",
-                            "image": self._encode_image(image_buffer),
+                            "type": "image_file",
+                            "image_file": {"file_id": image_file.id},
                         }
                     ]
                 }
             )
+            print(messages)
             return messages
 
         if video_buffer is not None:
             messages.append(await self.get_video_prompt(video=video_buffer,
                                                         message=message))
+            print(messages)
             return messages
         messages.append({"role": "user", "content": message})
-
+        print(messages)
         return messages
 
     @staticmethod
@@ -354,7 +378,7 @@ class OpenAIHelper:
         partner_vs = await db.get_all_partners()
         is_voice = await self.is_need_voice(message)
 
-        if partner_vs is None:
+        if partner_vs == []:
             return message, 0, 0, is_voice
 
         answer = None
@@ -364,7 +388,7 @@ class OpenAIHelper:
 
                 messages = await self._generate_prompt_messages_assistant(message=message,
                                                                           video_buffer=video_buffer,
-                                                                          image_buffer=image_buffer)
+                                                                          image_path=image_buffer)
                 thread = await self.client.beta.threads.create(tool_resources={
                     "file_search": {"vector_store_ids": partner_vs}},
                     messages=messages)
@@ -394,10 +418,10 @@ class OpenAIHelper:
                     citations = []
 
                     for i, annotation in enumerate(annotations):
-                        message_content.value = message_content.value.replace(annotation.text, f"<sup>{i}</sup>")
+                        message_content.value = message_content.value.replace(annotation.text, f"[{i}]")
                         if file_citation := getattr(annotation, "file_citation", None):
                             file_ = await self.client.files.retrieve(file_citation.file_id)
-                            citations.append(f"<sup>{i}</sup>: {file_.filename}")
+                            citations.append(f"[{i}]: {file_.filename}")
 
                     n_input_tokens, n_output_tokens = run.usage.prompt_tokens, run.usage.completion_tokens
 
@@ -427,7 +451,9 @@ class OpenAIHelper:
                     video_buffer=video_buffer
                 )
 
-                messages = await self._generate_prompt_messages_assistant(message, dialog_messages, image_buffer,
+                messages = await self._generate_prompt_messages_assistant(message,
+                                                                          dialog_messages,
+                                                                          image_buffer,
                                                                           video_buffer)
                 thread = await self.client.beta.threads.create(tool_resources={
                     "file_search": {"vector_store_ids": vs_ids}},
@@ -453,25 +479,26 @@ class OpenAIHelper:
                         thread_id=thread.id,
                         run_id=run.id
                     ))
-                    message_content = messages[0].content[0].text
+                    # print(messages)
+                    message_content = messages[0][1][0].content[0].text
                     annotations = message_content.annotations
                     citations = []
 
                     for i, annotation in enumerate(annotations):
-                        message_content.value = message_content.value.replace(annotation.text, f"<sup>{i}</sup>")
+                        message_content.value = message_content.value.replace(annotation.text, f"[{i}]")
                         if file_citation := getattr(annotation, "file_citation", None):
                             file_ = await self.client.files.retrieve(file_citation.file_id)
-                            citations.append(f"<sup>{i}</sup>: {file_.filename}")
-
+                            citations.append(f"[{i}]: {file_.filename}")
+                    answer = message_content.value
                     n_input_tokens, n_output_tokens = run.usage.prompt_tokens, run.usage.completion_tokens
                     n_first_dialog_messages_removed = n_dialog_messages_before - len(dialog_messages)
 
                 elif run.status == "requires_action":
-                    tool_call = await run.required_action.submit_tool_outputs.tool_calls[0]
+                    tool_call = run.required_action.submit_tool_outputs.tool_calls[0]
                     func_name = tool_call.function.name
                     arg = json.loads(tool_call.function.arguments)
                     function = self.tools_dict[func_name]
-                    context = function(**arg)
+                    context = await function(**arg)
 
                     run = await self.client.beta.threads.runs.submit_tool_outputs(
                         thread_id=thread.id,
@@ -490,16 +517,16 @@ class OpenAIHelper:
                         thread_id=thread.id,
                         run_id=run.id
                     ))
-                    message_content = messages[0].content[0].text
+                    message_content = messages[0][1][0].content[0].text
                     annotations = message_content.annotations
                     citations = []
 
                     for i, annotation in enumerate(annotations):
-                        message_content.value = message_content.value.replace(annotation.text, f"<sup>{i}</sup>")
+                        message_content.value = message_content.value.replace(annotation.text, f"[{i}]")
                         if file_citation := getattr(annotation, "file_citation", None):
                             file_ = await self.client.files.retrieve(file_citation.file_id)
-                            citations.append(f"<sup>{i}</sup>: {file_.filename}")
-
+                            citations.append(f"[{i}]: {file_.filename}")
+                    answer = message_content.value
                     n_input_tokens, n_output_tokens = run.usage.prompt_tokens, run.usage.completion_tokens
                     n_first_dialog_messages_removed = n_dialog_messages_before - len(dialog_messages)
 

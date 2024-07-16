@@ -1,12 +1,7 @@
 from datetime import datetime, timedelta
 
 from aiogram.types import Message, CallbackQuery
-from aiogram.methods import SendMessage, EditMessageText
-
 from src.database import DataBase as db
-from src.utils import is_previous_message_not_answered_yet
-from src.nn import OpenAIHelper
-
 import asyncio
 
 
@@ -31,17 +26,18 @@ async def get_user_balance(user_id):
     type_rate_user = await db.get_rate_attribute(rate_name=user_data["rate"],
                                                  key="type")
     balance_data = (
-        f"Ваш баланс на {str(datetime.now().date())}:\n"
-        f"Количество токенов на балансе: {user_data['n_tokens']}\n"
-        f"Количество секунд на распознавание речи: {user_data['n_transcribed_seconds']}\n"
-        f"Количество секунд на генерацию речи: {user_data['n_generate_seconds']}\n\n"
-        f"Ваш тариф: {'Бесплатный' if user_data['rate'] == 'free' else user_data['rate']}\n"
-        f"Последняя оплата: {user_data['last_pay'].date()}\n"
-        f"Дата отключения тарифа: {str((user_data['last_pay'].date() + type_[type_rate_user]).date()) if user_data['rate'] != 'free' else ''}"
+        f"✨ Ваш баланс на {str(datetime.now().date())}: ✨\n"
+        f"💬 Количество токенов на балансе: {user_data['n_tokens']}\n"
+        f"🎙️ Количество секунд на распознавание речи: {user_data['n_transcribed_seconds']}\n"
+        f"🗣️ Количество секунд на генерацию речи: {user_data['n_generate_seconds']}\n\n"
+        f"💰 Ваш тариф: {'Бесплатный' if user_data['rate'] == 'free' else user_data['rate']}\n"
+        f"📅 Последняя оплата: {user_data['last_pay'].date()}\n"
+        f"🗓️ Дата отключения тарифа: {str((user_data['last_pay'] + type_[type_rate_user]).date()) if user_data['rate'] != 'free' else ''}"
     )
 
     return balance_data
 
 
 if __name__ == "__main__":
-    asyncio.run(get_user_balance(user_id=6925528772))
+    balance = asyncio.run(get_user_balance(user_id=6925528772))
+    print(balance)

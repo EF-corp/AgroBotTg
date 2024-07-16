@@ -5,6 +5,7 @@ from src.bot import bot
 
 from aiogram.fsm.strategy import FSMStrategy
 from aiogram import Dispatcher
+
 import logging
 import asyncio
 

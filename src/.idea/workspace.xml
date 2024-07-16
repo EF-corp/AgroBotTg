@@ -1,29 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="853b3e0c-1997-43ab-94a2-fbaf90f5edf3" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/.gitignore" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/modules.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/src.iml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/config/config.env" beforeDir="false" afterPath="$PROJECT_DIR$/config/config.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/config/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/config/config.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/database/async_database.py" beforeDir="false" afterPath="$PROJECT_DIR$/database/async_database.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/handlers/admin.py" beforeDir="false" afterPath="$PROJECT_DIR$/handlers/admin.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/handlers/states/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/handlers/states/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/handlers/states/admin_states.py" beforeDir="false" afterPath="$PROJECT_DIR$/handlers/states/admin_states.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/handlers/user.py" beforeDir="false" afterPath="$PROJECT_DIR$/handlers/user.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/keyboards/user.py" beforeDir="false" afterPath="$PROJECT_DIR$/keyboards/user.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/nn/knowledge_loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/nn/knowledge_loader.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/nn/openai_api.py" beforeDir="false" afterPath="$PROJECT_DIR$/nn/openai_api.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/run_bot.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/general.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/general.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/stats.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/stats.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/user_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/user_utils.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web_callback/payment/accept_payment.py" beforeDir="false" afterPath="$PROJECT_DIR$/web_callback/payment/accept_payment.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web_callback/payment/recurrent_tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/web_callback/payment/recurrent_tools.py" afterDir="false" />
-    </list>
+    <list default="true" id="853b3e0c-1997-43ab-94a2-fbaf90f5edf3" name="Changes" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -53,7 +31,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1721116380190</updated>
-      <workItem from="1721116380263" duration="231000" />
+      <workItem from="1721116380263" duration="832000" />
     </task>
     <servers />
   </component>

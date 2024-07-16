@@ -1,0 +1,16 @@
+services:
+  agro-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      depends_on:
+        - mongo
+  mongo:
+    image: mongo
+    ports:
+      - 27017:27017
+
+
+networks:
+  mynetwork:
+    driver: bridge
